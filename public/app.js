@@ -99,10 +99,219 @@
     return `fnv_${(h >>> 0).toString(16)}`;
   }
 
+  const STYLE_PACKS = {
+    apple: {
+      id: 'apple',
+      name: '苹果原生',
+      badge: '默认',
+      desc: '极简克制的高级毛玻璃质感，保留原始标准表达与交互。',
+      swatchBg: 'linear-gradient(135deg, #0077ED, #005AC1)',
+      swatchIcon: '',
+      lightMeta: '#F5F5F7',
+      darkMeta: '#000000',
+      authTitle: '时序 · 统一学习账户',
+      tabs: { today: '今日', groups: '小组', exams: '倒计时', desktop: '桌面' },
+      dayTitles: { today: '今日学习', yesterday: '昨日复盘', tomorrow: '明日计划', customSuffix: '任务' },
+      countdownEmptyTitle: '尚未设定考试或目标倒计时',
+      countdownEmptyDesc: '设定考试或目标日期，首页与锁屏自动倒数。',
+      countdownEmptyBtn: '+ 设定目标倒计时',
+      progressMeta: '进度',
+      tileProgressToday: '今日进度',
+      tileProgressOther: '当日进度',
+      tileFocus: '今日专注',
+      tileFocusCta: '开启专注计时 ›',
+      tileFocusRunning: '计时运行中 ›',
+      focusRingLabel: '专注',
+      focusSheetTitle: '沉浸专注计时',
+      focusDefaultLabel: '专注学习',
+      focusLivePrefix: '专注进行中',
+      taskSeqLabel: '任务序列',
+      manageCatsBtn: '管理大标题',
+      addTaskBtn: '+ 添加任务',
+      taskEmptyTitleSuffix: '暂无安排',
+      taskEmptyDesc: '先自定义任务大标题（如专业课、数学、英语），再安排当日或每日重复任务。',
+      catSheetTitle: '自定义任务大标题',
+      catSheetDesc: '自由命名你的学习模块大标题（如：专业课、数据结构、民法总论、雅思精听），任务将自动归类到对应大标题下。',
+      catPlaceholder: '例如：专业课 · 计算机组成原理',
+      hudCheckin: '今日打卡完成',
+      hudAllDone: '全部任务达成',
+      groupSub: '多人共学 · 互相监督',
+      groupTitle: '学习小组',
+      groupCreateBtn: '+ 建组',
+      groupJoinBtn: '邀请码加入',
+      groupProgressLabel: '今日小组总达成率',
+      groupCodeLabel: '小组邀请码',
+      groupMemberTitle: '组员今日进度',
+      groupMemberHint: '点击成员头像可互相「拍一拍催学」或「点赞鼓励」',
+      groupFeedTitle: '小组打卡动态',
+      groupFeedPlaceholder: '发一条学习心得或打卡状态给组员…',
+      groupEmptyTitle: '尚未创建或加入学习小组',
+      groupEmptyDesc: '创建一个学习小组设定共同考试倒计时，生成专属邀请码与链接邀请同伴一起每日打卡监督。',
+      groupEmptyCreate: '创建第一个小组',
+      nudgeText: (name) => `拍了拍 ${name}：该学习打卡啦`,
+      cheerText: (name) => `给 ${name} 送上了鼓励`,
+      nudgeHud: (name) => `已拍一拍提醒 ${name}`,
+      cheerHud: (name) => `已鼓励 ${name}`,
+      examSub: '距离目标 · 精准追踪',
+      examTitle: '目标倒计时',
+      examAddBtn: '+ 新目标',
+      wallpaperFallback: '前往「今日」添加你的学习任务清单'
+    },
+    kitty: {
+      id: 'kitty',
+      name: '粉萌凯蒂',
+      badge: '甜心风',
+      desc: '樱花奶昔粉与蝴蝶结甜心美学，元气满满的温柔自律陪伴。',
+      swatchBg: 'linear-gradient(135deg, #FF73A8, #E83E7D)',
+      swatchIcon: '🎀',
+      lightMeta: '#FFF5F8',
+      darkMeta: '#160D12',
+      authTitle: '时序 · 凯蒂甜心自习室',
+      tabs: { today: '今日', groups: '搭子', exams: '心愿', desktop: '装扮' },
+      dayTitles: { today: '今日份努力', yesterday: '昨日小复盘', tomorrow: '明日小期待', customSuffix: '小计划' },
+      countdownEmptyTitle: '还没有定下心愿倒数日哦',
+      countdownEmptyDesc: '设一个期待的考试或闪光日，每天一起倒数变优秀。',
+      countdownEmptyBtn: '+ 许下第一个心愿日',
+      progressMeta: '元气进度',
+      tileProgressToday: '今日小目标',
+      tileProgressOther: '当日小目标',
+      tileFocus: '元气专注',
+      tileFocusCta: '开启元气番茄钟 ›',
+      tileFocusRunning: '认真变优秀中 ›',
+      focusRingLabel: '元气',
+      focusSheetTitle: '元气番茄钟',
+      focusDefaultLabel: '认真变优秀',
+      focusLivePrefix: '元气专注中',
+      taskSeqLabel: '甜心计划表',
+      manageCatsBtn: '可爱分类',
+      addTaskBtn: '+ 记小目标',
+      taskEmptyTitleSuffix: '还没有写下小计划',
+      taskEmptyDesc: '先建几个喜欢的大标题分类（如专业课、单词本、复盘日记），开启今日自律吧。',
+      catSheetTitle: '自定义甜心分类大标题',
+      catSheetDesc: '自由命名你的专属学习分类，给每个科目挑一个喜欢的马卡龙标记色。',
+      catPlaceholder: '例如：专业课笔记 / 英语单词本',
+      hudCheckin: '太棒啦！完成一个小目标，奖励小红花',
+      hudAllDone: '全部小目标 100% 达成，今天超级闪耀',
+      groupSub: '闺蜜搭子 · 温柔互督',
+      groupTitle: '搭子自习室',
+      groupCreateBtn: '+ 建自习室',
+      groupJoinBtn: '暗号入组',
+      groupProgressLabel: '今日自习室元气达成率',
+      groupCodeLabel: '自习室暗号',
+      groupMemberTitle: '搭子今日进度',
+      groupMemberHint: '点头像可「轻轻戳一下催学」或「贴贴夸夸」',
+      groupFeedTitle: '自习室甜心动态',
+      groupFeedPlaceholder: '和搭子分享今天的自律小确幸…',
+      groupEmptyTitle: '还没有和搭子组建自习室哦',
+      groupEmptyDesc: '拉上你的备考搭子或闺蜜，一起定下倒数日，每天互相打气不摆烂。',
+      groupEmptyCreate: '创建甜心自习室',
+      nudgeText: (name) => `轻轻戳了戳 ${name}：别摸鱼啦，一起变优秀呀`,
+      cheerText: (name) => `给 ${name} 贴了一枚小红花，今天超自律`,
+      nudgeHud: (name) => `已轻轻戳了戳 ${name} 去学习`,
+      cheerHud: (name) => `已给 ${name} 贴上小红花夸夸`,
+      examSub: '闪闪发光 · 心愿倒数',
+      examTitle: '心愿倒数日',
+      examAddBtn: '+ 新心愿',
+      wallpaperFallback: '打开时序写下今日份小目标吧'
+    },
+    xianxia: {
+      id: 'xianxia',
+      name: '问鼎修仙',
+      badge: '国风玉瓷',
+      desc: '宣纸玉瓷与玄墨流金国风美学，备考如渡劫，打卡即破境飞升。',
+      swatchBg: 'linear-gradient(135deg, #213B32, #B87324)',
+      swatchIcon: '仙',
+      lightMeta: '#F6F2E9',
+      darkMeta: '#0D1110',
+      authTitle: '时序 · 问道修行录',
+      tabs: { today: '修行', groups: '宗门', exams: '渡劫', desktop: '玉简' },
+      dayTitles: { today: '今日修行', yesterday: '昨日悟道', tomorrow: '明日闭关', customSuffix: '功课' },
+      countdownEmptyTitle: '尚未立下渡劫飞升之期',
+      countdownEmptyDesc: '定下大考飞升之日，玉简与首页日夜警醒道心。',
+      countdownEmptyBtn: '+ 立下渡劫之期',
+      progressMeta: '修为圆满度',
+      tileProgressToday: '今日功课',
+      tileProgressOther: '当日功课',
+      tileFocus: '闭关打坐',
+      tileFocusCta: '开启闭关打坐 ›',
+      tileFocusRunning: '闭关参悟中 ›',
+      focusRingLabel: '打坐',
+      focusSheetTitle: '闭关打坐计时',
+      focusDefaultLabel: '闭关参悟',
+      focusLivePrefix: '正在闭关参悟',
+      taskSeqLabel: '修行功课簿',
+      manageCatsBtn: '功法大纲',
+      addTaskBtn: '+ 立功课',
+      taskEmptyTitleSuffix: '尚未排定功课',
+      taskEmptyDesc: '先立下你的功法大标题（如专业课剑诀、高数心法、英语真经），开启今日悟道。',
+      catSheetTitle: '自定义功法大纲',
+      catSheetDesc: '自由命名你的修行功法大标题，不同科目的日常功课将归于各自玉卷之下。',
+      catPlaceholder: '例如：专业课心法 / 高数剑诀',
+      hudCheckin: '功课圆满，道心更稳，修为精进一分',
+      hudAllDone: '功课悉数圆满，隐有破境飞升之象',
+      groupSub: '同门道友 · 结伴飞升',
+      groupTitle: '宗门道友',
+      groupCreateBtn: '+ 创宗门',
+      groupJoinBtn: '令牌入门',
+      groupProgressLabel: '今日宗门总修为达成率',
+      groupCodeLabel: '宗门令牌',
+      groupMemberTitle: '同门今日修为',
+      groupMemberHint: '点击道友头像可「传音催修」或「拱手道贺」',
+      groupFeedTitle: '宗门问道传音壁',
+      groupFeedPlaceholder: '留下一句悟道心得或闭关宣言…',
+      groupEmptyTitle: '尚未创立或拜入任何宗门',
+      groupEmptyDesc: '创立一方修行宗门立下共同渡劫之期，凭宗门令牌邀同道中人结伴飞升。',
+      groupEmptyCreate: '创立一方宗门',
+      nudgeText: (name) => `向 ${name} 发出一道传音符：大劫将至，速来修行`,
+      cheerText: (name) => `向 ${name} 拱手道贺：道友精进神速，飞升可期`,
+      nudgeHud: (name) => `已向 ${name} 发出传音符催修`,
+      cheerHud: (name) => `已向 ${name} 拱手道贺`,
+      examSub: '大劫将至 · 问鼎飞升',
+      examTitle: '渡劫倒数',
+      examAddBtn: '+ 立新劫',
+      wallpaperFallback: '前往修行录立下今日功课'
+    }
+  };
+
+  function getPack() {
+    return STYLE_PACKS[state.stylePack] || STYLE_PACKS.apple;
+  }
+
+  function getXianxiaRealm(streak) {
+    if (streak >= 30) return '化神大能';
+    if (streak >= 15) return '元婴境';
+    if (streak >= 7) return '金丹境';
+    if (streak >= 3) return '筑基境';
+    if (streak >= 1) return '炼气圆满';
+    return '炼气初期';
+  }
+
+  function getHeroThemeMotifSVG() {
+    if (state.stylePack === 'kitty') {
+      return `
+        <svg class="hero-theme-motif" width="46" height="32" viewBox="0 0 46 32" fill="none" aria-hidden="true">
+          <path d="M23 16C18 8 6 5 4 14C2 23 15 26 23 18C31 26 44 23 42 14C40 5 28 8 23 16Z" fill="rgba(255,255,255,0.28)" stroke="rgba(255,255,255,0.75)" stroke-width="1.6"/>
+          <circle cx="23" cy="16" r="4.8" fill="rgba(255,255,255,0.9)"/>
+        </svg>
+      `;
+    }
+    if (state.stylePack === 'xianxia') {
+      return `
+        <svg class="hero-theme-motif" width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true">
+          <circle cx="22" cy="22" r="18" stroke="rgba(226,184,107,0.45)" stroke-width="1.4"/>
+          <circle cx="22" cy="22" r="12" stroke="rgba(226,184,107,0.28)" stroke-width="1"/>
+          <path d="M22 8C25 14 25 18 22 22C19 18 19 14 22 8ZM22 36C25 30 25 26 22 22C19 26 19 30 22 36ZM8 22C14 19 18 19 22 22C18 25 14 25 8 22ZM36 22C30 19 26 19 22 22C26 25 30 25 36 22Z" fill="rgba(226,184,107,0.38)"/>
+        </svg>
+      `;
+    }
+    return '';
+  }
+
   const state = {
     mode: 'auto', // 'server' | 'supabase' | 'local'
     userId: '',
     authMode: 'login',
+    stylePack: STYLE_PACKS[safeStorageGet('shixu_style_pack')] ? safeStorageGet('shixu_style_pack') : 'apple',
     theme: safeStorageGet('shixu_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
     activeTab: 'today',
     selectedDate: todayKey(),
@@ -117,7 +326,7 @@
     focus: {
       presetMin: 25,
       remainingSec: 25 * 60,
-      endAt: null, // wall-clock ms timestamp for background accuracy
+      endAt: null,
       running: false,
       label: '专注学习',
       timerId: null
@@ -172,12 +381,13 @@
   }
 
   function getRelativeDayTitle(dateStr) {
+    const p = getPack().dayTitles;
     const today = todayKey();
-    if (dateStr === today) return '今日学习';
-    if (dateStr === shiftDateISO(today, -1)) return '昨日复盘';
-    if (dateStr === shiftDateISO(today, 1)) return '明日计划';
+    if (dateStr === today) return p.today;
+    if (dateStr === shiftDateISO(today, -1)) return p.yesterday;
+    if (dateStr === shiftDateISO(today, 1)) return p.tomorrow;
     const d = parseDateISO(dateStr);
-    return `${d.getMonth() + 1}月${d.getDate()}日任务`;
+    return `${d.getMonth() + 1}月${d.getDate()}日${p.customSuffix}`;
   }
 
   function timeAgo(ts) {
@@ -414,6 +624,11 @@
         state.userId = legacyUid;
         saveSession(legacyUid);
       }
+    }
+
+    if (!safeStorageGet('shixu_style_pack')) {
+      const savedPack = await idbGet('stylePack');
+      if (savedPack && STYLE_PACKS[savedPack]) applyStylePack(savedPack);
     }
   }
 
@@ -1118,9 +1333,10 @@
       const toUser = s.users.find((u) => u.id === body.toUserId) || { name: '组员' };
       if (!fromUser) throw new Error('成员不存在');
       const kind = body.kind === 'cheer' ? 'cheer' : 'nudge';
-      const text = kind === 'cheer' ? `给 ${toUser.name} 送上了鼓励` : `拍了拍 ${toUser.name}：该学习打卡啦`;
+      const p = getPack();
+      const text = kind === 'cheer' ? p.cheerText(toUser.name) : p.nudgeText(toUser.name);
       s.feeds.push({ id: genId('f'), groupId: nMatch[1], userId: fromUser.id, type: kind, text, createdAt: Date.now(), likedBy: [] });
-      saveLocalStore(s, `${fromUser.name} ${kind === 'cheer' ? '鼓励了' : '拍了拍'} ${toUser.name}`);
+      saveLocalStore(s, `${fromUser.name}：${text}`);
       return { ok: true };
     }
 
@@ -1155,16 +1371,98 @@
     return payload;
   }
 
+  function syncThemeMeta() {
+    const p = getPack();
+    const isDark = state.theme === 'dark';
+    const metaTheme = document.getElementById('meta-theme-color');
+    const metaStatus = document.getElementById('meta-status-bar');
+    if (metaTheme) metaTheme.setAttribute('content', isDark ? p.darkMeta : p.lightMeta);
+    if (metaStatus) metaStatus.setAttribute('content', isDark ? 'black-translucent' : 'default');
+  }
+
   function applyTheme(theme) {
     state.theme = theme;
     safeStorageSet('shixu_theme', theme);
     document.documentElement.setAttribute('data-theme', theme);
-    const metaTheme = document.getElementById('meta-theme-color');
-    const metaStatus = document.getElementById('meta-status-bar');
-    if (metaTheme) metaTheme.setAttribute('content', theme === 'dark' ? '#000000' : '#F5F5F7');
-    if (metaStatus) metaStatus.setAttribute('content', theme === 'dark' ? 'black-translucent' : 'default');
+    syncThemeMeta();
     document.getElementById('theme-icon-sun').classList.toggle('hidden', theme === 'dark');
     document.getElementById('theme-icon-moon').classList.toggle('hidden', theme !== 'dark');
+  }
+
+  function applyStylePack(packId) {
+    const id = STYLE_PACKS[packId] ? packId : 'apple';
+    state.stylePack = id;
+    safeStorageSet('shixu_style_pack', id);
+    idbSet('stylePack', id);
+    document.documentElement.setAttribute('data-style', id);
+    syncThemeMeta();
+
+    const p = getPack();
+    const tabMap = { today: 'tab-btn-today', groups: 'tab-btn-groups', exams: 'tab-btn-exams', desktop: 'tab-btn-desktop' };
+    for (const [key, domId] of Object.entries(tabMap)) {
+      const lbl = document.querySelector(`#${domId} .tab-label`);
+      if (lbl && p.tabs[key]) lbl.textContent = p.tabs[key];
+    }
+    if (!state.focus.running) {
+      const defaults = Object.values(STYLE_PACKS).map((x) => x.focusDefaultLabel);
+      if (defaults.includes(state.focus.label)) state.focus.label = p.focusDefaultLabel;
+    }
+  }
+
+  function openStylePackSheet() {
+    const packs = Object.values(STYLE_PACKS);
+    openSheet(`
+      <div class="sheet-header">
+        <h2 class="sheet-title">主题风格与话术切换</h2>
+        <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
+      </div>
+      <p style="font-size:12px;color:var(--text-secondary);margin:0 0 14px;line-height:1.5;">
+        自由选择你喜欢的界面视觉与专属陪伴话术，随时无损切换，所有学习数据完整保留。
+      </p>
+
+      <div class="theme-pack-list">
+        ${packs.map((p) => `
+          <button type="button" class="theme-pack-card ${state.stylePack === p.id ? 'is-selected' : ''}" data-pick-style="${p.id}">
+            <div class="theme-pack-swatch" style="background:${p.swatchBg}">${p.swatchIcon}</div>
+            <div class="theme-pack-info">
+              <div class="theme-pack-name">
+                <span>${esc(p.name)}</span>
+                <span class="meta-tag">${esc(p.badge)}</span>
+              </div>
+              <div class="theme-pack-desc">${esc(p.desc)}</div>
+            </div>
+            ${state.stylePack === p.id ? '<span class="account-check">使用中</span>' : ''}
+          </button>
+        `).join('')}
+      </div>
+
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border-separator);display:flex;align-items:center;justify-content:space-between;">
+        <span style="font-size:13px;font-weight:600;">明暗外观模式</span>
+        <div class="segmented-control">
+          <button type="button" class="seg-btn ${state.theme === 'light' ? 'is-active' : ''}" data-pick-mode="light">浅色模式</button>
+          <button type="button" class="seg-btn ${state.theme === 'dark' ? 'is-active' : ''}" data-pick-mode="dark">深色暗夜</button>
+        </div>
+      </div>
+    `);
+
+    sheetContent.querySelectorAll('[data-pick-style]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const nextPack = btn.dataset.pickStyle;
+        applyStylePack(nextPack);
+        syncHeader();
+        renderView(false);
+        openStylePackSheet();
+        showHud(`已切换为「${STYLE_PACKS[nextPack].name}」主题`);
+      });
+    });
+
+    sheetContent.querySelectorAll('[data-pick-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        applyTheme(btn.dataset.pickMode);
+        if (state.activeTab === 'desktop' && state.data && state.data.user) renderView(false);
+        openStylePackSheet();
+      });
+    });
   }
 
   // =========================================================================
@@ -1356,8 +1654,10 @@ Script.complete();`;
       navAvatar.style.background = 'var(--accent)';
       navUsername.textContent = '统一账户';
     }
+    const p = getPack();
+    const compactMap = { groups: p.groupTitle, exams: p.examTitle, desktop: p.tabs.desktop };
     compactTitle.textContent = u
-      ? (state.activeTab === 'today' ? getRelativeDayTitle(state.selectedDate) : (TAB_TITLES[state.activeTab] || '时序'))
+      ? (state.activeTab === 'today' ? getRelativeDayTitle(state.selectedDate) : (compactMap[state.activeTab] || TAB_TITLES[state.activeTab] || '时序'))
       : '时序';
     const showFab = Boolean(u) && (state.activeTab === 'today' || state.activeTab === 'exams');
     fabAdd.classList.toggle('is-hidden', !showFab);
@@ -1522,11 +1822,12 @@ Script.complete();`;
       return;
     }
 
+    const p = getPack();
     const focusCapsule = state.focus.running ? `
       <div class="focus-live-bar" data-action="open-focus" role="button" aria-label="展开正在运行的专注计时">
         <div class="focus-live-left">
           <span class="focus-live-dot"></span>
-          <span class="focus-live-label">专注进行中 · ${esc(state.focus.label)}</span>
+          <span class="focus-live-label">${esc(p.focusLivePrefix)} · ${esc(state.focus.label)}</span>
         </div>
         <span id="live-focus-bar-clock" class="focus-live-time">${formatTimer(getFocusRemainingSec())}</span>
       </div>
@@ -1541,7 +1842,6 @@ Script.complete();`;
       viewContainer.innerHTML = focusCapsule + buildExamsView();
     } else if (state.activeTab === 'desktop') {
       viewContainer.innerHTML = focusCapsule + buildDesktopView();
-      // Render lightweight preview asynchronously inside rAF so tab switch is silky 60fps
       requestAnimationFrame(() => {
         const previewImg = document.getElementById('wallpaper-preview-img');
         if (previewImg) previewImg.src = renderLockscreenCanvasDataUrl(true);
@@ -1556,6 +1856,7 @@ Script.complete();`;
   }
 
   function buildUnifiedAuthView() {
+    const p = getPack();
     const isReg = state.authMode === 'register';
     const invite = state.pendingInvite;
     const restore = state.pendingRestore;
@@ -1564,13 +1865,19 @@ Script.complete();`;
 
     return `
       <div style="padding:18px 4px 12px;text-align:center;">
-        <img src="./icons/apple-touch-icon.png" alt="时序图标" style="width:72px;height:72px;border-radius:18px;box-shadow:0 12px 28px rgba(0,113,227,0.26);margin-bottom:14px;" />
-        <h1 class="page-title" style="font-size:28px;">时序 · 统一学习账户</h1>
-        <p style="font-size:13px;line-height:1.55;color:var(--text-secondary);margin:8px auto 18px;max-width:310px;">
+        <img src="./icons/apple-touch-icon.png" alt="时序图标" style="width:72px;height:72px;border-radius:18px;box-shadow:0 12px 28px rgba(0,113,227,0.22);margin-bottom:14px;" />
+        <h1 class="page-title" style="font-size:28px;">${esc(p.authTitle)}</h1>
+        <p style="font-size:13px;line-height:1.55;color:var(--text-secondary);margin:8px auto 14px;max-width:310px;">
           ${cloudReady
             ? '云端永久记忆已开启：无论网站升级或更换任意设备，登录同一账户即可自动恢复全部学习记录。'
             : '账户数据采用本地双层永久存储，网站升级绝不丢失；更换设备时可通过换机迁移码或备份文件完整恢复。'}
         </p>
+
+        <div style="margin-bottom:16px;">
+          <button type="button" class="btn-secondary btn-sm" data-action="open-style-packs">
+            当前主题：${esc(p.name)} · 切换风格 ›
+          </button>
+        </div>
 
         ${restore ? `
           <div class="card card-padded" style="text-align:left;margin-bottom:14px;">
@@ -1713,11 +2020,13 @@ Script.complete();`;
   }
 
   function buildTodayView() {
+    const p = getPack();
     const { user, tasks, categories, exams, groups } = state.data;
     const sel = state.selectedDate;
     const pinned = exams[0];
     const dayStats = getDayStats(tasks, sel);
     const primaryGroup = groups[0];
+    const realmLabel = state.stylePack === 'xianxia' ? getXianxiaRealm(user.streak) : '';
 
     const colorMap = new Map();
     for (const c of categories) colorMap.set(c.name, c.color);
@@ -1749,13 +2058,17 @@ Script.complete();`;
           <div class="page-date">${formatDateCN(sel)}</div>
           <h1 class="page-title">${getRelativeDayTitle(sel)}</h1>
         </div>
-        ${primaryGroup ? `
-          <button class="btn-secondary btn-sm" data-action="goto-groups">小组 ${primaryGroup.teamPct}%</button>
-        ` : ''}
+        <div style="display:flex;align-items:center;gap:6px;">
+          ${realmLabel ? `<span class="realm-badge">${realmLabel}</span>` : ''}
+          ${primaryGroup ? `
+            <button class="btn-secondary btn-sm" data-action="goto-groups">${esc(p.tabs.groups)} ${primaryGroup.teamPct}%</button>
+          ` : ''}
+        </div>
       </div>
 
       ${pinned ? `
         <section class="hero-countdown" data-action="goto-exams" style="cursor:pointer;">
+          ${getHeroThemeMotifSVG()}
           <div class="hero-top">
             <span>${esc(pinned.tag)}</span>
             <span class="hero-target-date">${esc(pinned.targetDate)}</span>
@@ -1767,7 +2080,7 @@ Script.complete();`;
               <span class="hero-days-unit">天</span>
             </div>
             <div class="hero-progress-meta">
-              <div>约 ${Math.max(1, Math.ceil(pinned.daysLeft / 7))} 周 · 进度</div>
+              <div>约 ${Math.max(1, Math.ceil(pinned.daysLeft / 7))} 周 · ${esc(p.progressMeta)}</div>
               <div class="hero-progress-val tabular">${pinned.progress}%</div>
             </div>
           </div>
@@ -1777,21 +2090,20 @@ Script.complete();`;
         </section>
       ` : `
         <section class="card card-padded" style="text-align:center;padding:20px 18px;">
-          <div style="font-size:15px;font-weight:700;">尚未设定考试或目标倒计时</div>
-          <p style="font-size:12px;color:var(--text-secondary);margin:5px 0 12px;">设定考试或目标日期，首页与锁屏自动倒数。</p>
-          <button class="btn-primary btn-sm" data-action="open-add-exam">+ 设定目标倒计时</button>
+          <div style="font-size:15px;font-weight:700;">${esc(p.countdownEmptyTitle)}</div>
+          <p style="font-size:12px;color:var(--text-secondary);margin:5px 0 12px;">${esc(p.countdownEmptyDesc)}</p>
+          <button class="btn-primary btn-sm" data-action="open-add-exam">${esc(p.countdownEmptyBtn)}</button>
         </section>
       `}
 
       ${buildTimelineSection(tasks)}
 
-      <!-- Interactive Apple Health Summary Tiles (Tap left for Analytics & Review, right for Focus Timer) -->
       <section class="summary-strip">
         <button class="card summary-tile" data-action="open-analytics" style="text-align:left;">
           <div>
-            <div class="summary-label">${sel === todayKey() ? '今日进度' : '当日进度'}</div>
+            <div class="summary-label">${sel === todayKey() ? esc(p.tileProgressToday) : esc(p.tileProgressOther)}</div>
             <div class="summary-value tabular">${dayStats.done} / ${dayStats.total}</div>
-            <div class="summary-sub" style="color:var(--accent);font-weight:500;">连续 ${user.streak} 天 · 复盘 ›</div>
+            <div class="summary-sub" style="color:var(--accent);font-weight:500;">${state.stylePack === 'xianxia' ? `${realmLabel} · 复盘 ›` : `连续 ${user.streak} 天 · 复盘 ›`}</div>
           </div>
           <div class="ring-box">
             ${ringSVG(dayStats.pct, 48, 5, dayStats.pct === 100 && dayStats.total > 0 ? 'var(--green)' : 'var(--accent)')}
@@ -1801,22 +2113,22 @@ Script.complete();`;
 
         <button class="card summary-tile" data-action="open-focus" style="text-align:left;">
           <div>
-            <div class="summary-label">今日专注</div>
+            <div class="summary-label">${esc(p.tileFocus)}</div>
             <div class="summary-value tabular">${user.focusMinutesToday || 0}<span style="font-size:13px;font-weight:500;margin-left:2px;">分</span></div>
-            <div class="summary-sub" style="color:var(--accent);font-weight:500;">${state.focus.running ? '计时运行中 ›' : '开启专注计时 ›'}</div>
+            <div class="summary-sub" style="color:var(--accent);font-weight:500;">${state.focus.running ? esc(p.tileFocusRunning) : esc(p.tileFocusCta)}</div>
           </div>
           <div class="ring-box">
             ${ringSVG(Math.min(100, Math.round(((user.focusMinutesToday || 0) / 180) * 100)), 48, 5, 'var(--green)')}
-            <span class="ring-center" style="font-size:10px;">专注</span>
+            <span class="ring-center" style="font-size:10px;">${esc(p.focusRingLabel)}</span>
           </div>
         </button>
       </section>
 
       <div class="section-header">
-        <h2 class="section-title">${formatDateCN(sel)} · 任务序列</h2>
+        <h2 class="section-title">${formatDateCN(sel)} · ${esc(p.taskSeqLabel)}</h2>
         <div style="display:flex;align-items:center;gap:12px;">
-          <button class="section-action" style="color:var(--text-secondary);" data-action="open-manage-categories">管理大标题</button>
-          <button class="section-action" data-action="open-add-task">+ 添加任务</button>
+          <button class="section-action" style="color:var(--text-secondary);" data-action="open-manage-categories">${esc(p.manageCatsBtn)}</button>
+          <button class="section-action" data-action="open-add-task">${esc(p.addTaskBtn)}</button>
         </div>
       </div>
 
@@ -1867,11 +2179,11 @@ Script.complete();`;
         </div>
       ` : `
         <section class="card empty-box">
-          <div style="font-size:15px;font-weight:600;color:var(--text-primary);">${getRelativeDayTitle(sel)}暂无安排</div>
-          <p style="font-size:12px;margin:6px 0 14px;">先自定义任务大标题（如专业课、数学、英语），再安排当日或每日重复任务。</p>
+          <div style="font-size:15px;font-weight:600;color:var(--text-primary);">${getRelativeDayTitle(sel)}${esc(p.taskEmptyTitleSuffix)}</div>
+          <p style="font-size:12px;margin:6px 0 14px;">${esc(p.taskEmptyDesc)}</p>
           <div style="display:flex;justify-content:center;gap:8px;">
-            <button class="btn-secondary btn-sm" data-action="open-manage-categories">自定义大标题</button>
-            <button class="btn-primary btn-sm" data-action="open-add-task">+ 添加任务</button>
+            <button class="btn-secondary btn-sm" data-action="open-manage-categories">${esc(p.manageCatsBtn)}</button>
+            <button class="btn-primary btn-sm" data-action="open-add-task">${esc(p.addTaskBtn)}</button>
           </div>
         </section>
       `}
@@ -1879,18 +2191,19 @@ Script.complete();`;
   }
 
   function buildGroupsView() {
+    const p = getPack();
     const { groups, user } = state.data;
     const activeGroup = groups.find((g) => g.id === state.activeGroupId) || groups[0];
 
     return `
       <div class="page-header">
         <div>
-          <div class="page-date">多人共学 · 互相监督</div>
-          <h1 class="page-title">学习小组</h1>
+          <div class="page-date">${esc(p.groupSub)}</div>
+          <h1 class="page-title">${esc(p.groupTitle)}</h1>
         </div>
         <div style="display:flex;gap:6px;">
-          <button class="btn-secondary btn-sm" data-action="open-join-group">邀请码加入</button>
-          <button class="btn-primary btn-sm" data-action="open-create-group">+ 建组</button>
+          <button class="btn-secondary btn-sm" data-action="open-join-group">${esc(p.groupJoinBtn)}</button>
+          <button class="btn-primary btn-sm" data-action="open-create-group">${esc(p.groupCreateBtn)}</button>
         </div>
       </div>
 
@@ -1920,7 +2233,7 @@ Script.complete();`;
 
           <div class="group-progress-row">
             <div class="group-progress-head">
-              <span style="color:var(--text-secondary);font-weight:500;">今日小组总达成率</span>
+              <span style="color:var(--text-secondary);font-weight:500;">${esc(p.groupProgressLabel)}</span>
               <span class="tabular" style="font-weight:700;color:var(--accent);">${activeGroup.teamPct}% (${activeGroup.doneTasks}/${activeGroup.totalTasks})</span>
             </div>
             <div class="progress-track">
@@ -1930,18 +2243,18 @@ Script.complete();`;
 
           <div class="group-invite-bar">
             <div class="invite-code-box">
-              <span class="invite-code-label">小组邀请码</span>
+              <span class="invite-code-label">${esc(p.groupCodeLabel)}</span>
               <span class="invite-code-val">${esc(activeGroup.inviteCode)}</span>
             </div>
             <div style="display:flex;gap:6px;">
-              <button class="btn-secondary btn-sm" data-action="leave-group" data-group-id="${esc(activeGroup.id)}">退组</button>
+              <button class="btn-secondary btn-sm" data-action="leave-group" data-group-id="${esc(activeGroup.id)}">退出</button>
               <button class="btn-primary btn-sm" data-action="copy-invite" data-group-id="${esc(activeGroup.id)}">复制邀请链接</button>
             </div>
           </div>
         </section>
 
         <div class="section-header">
-          <h2 class="section-title">组员今日进度 (${activeGroup.members.length} 人)</h2>
+          <h2 class="section-title">${esc(p.groupMemberTitle)} (${activeGroup.members.length} 人)</h2>
           <span style="font-size:12px;color:var(--text-secondary);">点击头像互动</span>
         </div>
 
@@ -1958,15 +2271,15 @@ Script.complete();`;
               </button>
             `).join('')}
           </div>
-          <div class="member-hint">点击成员头像可互相「拍一拍催学」或「点赞鼓励」</div>
+          <div class="member-hint">${esc(p.groupMemberHint)}</div>
         </section>
 
         <div class="section-header">
-          <h2 class="section-title">小组打卡动态</h2>
+          <h2 class="section-title">${esc(p.groupFeedTitle)}</h2>
         </div>
 
         <form id="form-group-feed" class="card feed-composer" data-group-id="${esc(activeGroup.id)}">
-          <input id="input-group-feed" class="feed-composer-input" type="text" maxlength="100" placeholder="发一条学习心得或打卡状态给组员…" />
+          <input id="input-group-feed" class="feed-composer-input" type="text" maxlength="100" placeholder="${esc(p.groupFeedPlaceholder)}" />
           <button type="submit" class="btn-primary btn-sm">发布</button>
         </form>
 
@@ -1995,13 +2308,11 @@ Script.complete();`;
         </section>
       ` : `
         <section class="card empty-box" style="padding:36px 20px;">
-          <div style="font-size:16px;font-weight:700;color:var(--text-primary);">尚未创建或加入学习小组</div>
-          <p style="font-size:13px;line-height:1.55;margin:8px 0 18px;">
-            创建一个学习小组设定共同考试倒计时，生成专属邀请码与链接邀请同伴一起每日打卡监督。
-          </p>
+          <div style="font-size:16px;font-weight:700;color:var(--text-primary);">${esc(p.groupEmptyTitle)}</div>
+          <p style="font-size:13px;line-height:1.55;margin:8px 0 18px;">${esc(p.groupEmptyDesc)}</p>
           <div style="display:flex;justify-content:center;gap:10px;">
-            <button class="btn-secondary" data-action="open-join-group">输入邀请码</button>
-            <button class="btn-primary" data-action="open-create-group">创建第一个小组</button>
+            <button class="btn-secondary" data-action="open-join-group">${esc(p.groupJoinBtn)}</button>
+            <button class="btn-primary" data-action="open-create-group">${esc(p.groupEmptyCreate)}</button>
           </div>
         </section>
       `}
@@ -2023,20 +2334,21 @@ Script.complete();`;
           body: JSON.stringify({ userId: state.userId, text })
         });
         await loadBootstrap(true);
-        showHud('动态已发布到小组');
+        showHud('动态已发布');
       } catch (err) { showHud(err.message, 'var(--red)'); }
     });
   }
 
   function buildExamsView() {
+    const p = getPack();
     const { exams } = state.data;
     return `
       <div class="page-header">
         <div>
-          <div class="page-date">距离目标 · 精准追踪</div>
-          <h1 class="page-title">目标倒计时</h1>
+          <div class="page-date">${esc(p.examSub)}</div>
+          <h1 class="page-title">${esc(p.examTitle)}</h1>
         </div>
-        <button class="btn-primary btn-sm" data-action="open-add-exam">+ 新目标</button>
+        <button class="btn-primary btn-sm" data-action="open-add-exam">${esc(p.examAddBtn)}</button>
       </div>
 
       <section>
@@ -2086,6 +2398,7 @@ Script.complete();`;
   }
 
   function buildDesktopView() {
+    const p = getPack();
     const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
     const baseUrl = window.location.origin + window.location.pathname;
     const shortcutUrl = state.mode === 'server'
@@ -2096,8 +2409,9 @@ Script.complete();`;
       <div class="page-header">
         <div>
           <div class="page-date">iPhone 专属体验</div>
-          <h1 class="page-title">桌面与倒计时</h1>
+          <h1 class="page-title">${state.stylePack === 'xianxia' ? '玉简与桌面' : (state.stylePack === 'kitty' ? '桌面装扮与壁纸' : '桌面与倒计时')}</h1>
         </div>
+        <button class="btn-secondary btn-sm" data-action="open-style-packs">${esc(p.name)} ▾</button>
       </div>
 
       <section class="card card-padded">
@@ -2287,6 +2601,18 @@ Script.complete();`;
         </div>
       </div>
 
+      <div class="field-label" style="margin-bottom:8px;">界面主题与专属话术</div>
+      <button type="button" class="account-row" data-action="open-style-packs" style="margin-bottom:14px;">
+        <div class="account-left">
+          <span class="theme-pack-swatch" style="width:32px;height:32px;border-radius:9px;font-size:15px;background:${getPack().swatchBg}">${getPack().swatchIcon}</span>
+          <div style="text-align:left;">
+            <div style="font-size:14px;font-weight:600;">当前主题：${esc(getPack().name)}</div>
+            <div style="font-size:11px;color:var(--text-secondary);">支持苹果原生 / 粉萌凯蒂 / 问鼎修仙随时无损切换</div>
+          </div>
+        </div>
+        <span style="font-size:12px;color:var(--accent);font-weight:600;">切换 ›</span>
+      </button>
+
       <div class="field-label" style="margin-bottom:8px;">跨设备无缝同步 / 换机数据迁移</div>
       <div class="card card-padded" style="margin-bottom:14px;background:var(--bg-surface);">
         <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;line-height:1.55;">
@@ -2397,22 +2723,23 @@ Script.complete();`;
 
   function openManageCategoriesSheet() {
     if (!state.data || !state.data.user) return;
+    const p = getPack();
     const cats = state.data.categories || [];
     let pickedColor = SYSTEM_COLORS[cats.length % SYSTEM_COLORS.length];
 
     openSheet(`
       <div class="sheet-header">
-        <h2 class="sheet-title">自定义任务大标题</h2>
+        <h2 class="sheet-title">${esc(p.catSheetTitle)}</h2>
         <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
       </div>
       <p style="font-size:12px;color:var(--text-secondary);margin:0 0 14px;line-height:1.5;">
-        自由命名你的学习模块大标题（如：专业课、数据结构、民法总论、雅思精听），任务将自动归类到对应大标题下。
+        ${esc(p.catSheetDesc)}
       </p>
 
       <form id="form-new-category" style="margin-bottom:16px;">
         <div class="field">
           <label class="field-label" for="input-new-cat-name">新建大标题名称</label>
-          <input id="input-new-cat-name" class="input" type="text" required maxlength="18" placeholder="例如：专业课 · 计算机组成原理" autofocus />
+          <input id="input-new-cat-name" class="input" type="text" required maxlength="18" placeholder="${esc(p.catPlaceholder)}" autofocus />
         </div>
         <div class="field">
           <label class="field-label">标记颜色</label>
@@ -2805,6 +3132,7 @@ Script.complete();`;
 
   function openFocusSheet() {
     if (!state.data || !state.data.user) return;
+    const p = getPack();
     const f = state.focus;
     const rem = getFocusRemainingSec();
     const totalSec = Math.max(1, f.presetMin * 60);
@@ -2813,7 +3141,7 @@ Script.complete();`;
 
     openSheet(`
       <div class="sheet-header">
-        <h2 class="sheet-title">沉浸专注计时</h2>
+        <h2 class="sheet-title">${esc(p.focusSheetTitle)}</h2>
         <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
       </div>
       <div class="focus-dial-wrap">
@@ -2937,23 +3265,37 @@ Script.complete();`;
     ctx.save();
     ctx.scale(scale, scale);
 
+    const p = getPack();
+    const styleId = state.stylePack;
     const isDark = state.theme === 'dark';
     const today = todayKey();
-    const pinned = state.data.exams[0] || { name: '尚未设定目标倒计时', tag: '时序', daysLeft: 0, progress: 0, targetDate: today };
+    const pinned = state.data.exams[0] || { name: p.countdownEmptyTitle, tag: p.name, daysLeft: 0, progress: 0, targetDate: today };
     const todayStats = getDayStats(state.data.tasks, today);
     const tasks = todayStats.list.slice(0, 3);
     const grp = state.data.groups[0];
 
+    const palettes = {
+      apple: isDark
+        ? { bg0: '#070C18', bg1: '#000000', glow: 'rgba(10,132,255,0.22)', card: 'rgba(28,28,30,0.88)', border: 'rgba(255,255,255,0.12)', accent: '#0A84FF', fg: '#F5F5F7', muted: '#98989D', sep: 'rgba(255,255,255,0.10)' }
+        : { bg0: '#E8F0FC', bg1: '#F5F5F7', glow: 'rgba(0,113,227,0.14)', card: 'rgba(255,255,255,0.88)', border: 'rgba(0,0,0,0.06)', accent: '#0071E3', fg: '#1D1D1F', muted: '#6E6E73', sep: 'rgba(0,0,0,0.07)' },
+      kitty: isDark
+        ? { bg0: '#27131D', bg1: '#140B10', glow: 'rgba(255,111,165,0.24)', card: 'rgba(38,22,30,0.90)', border: 'rgba(255,155,193,0.22)', accent: '#FF6FA5', fg: '#FFF2F6', muted: '#D4A5B8', sep: 'rgba(255,155,193,0.14)' }
+        : { bg0: '#FFD9E7', bg1: '#FFF5F8', glow: 'rgba(232,62,125,0.16)', card: 'rgba(255,255,255,0.92)', border: 'rgba(232,62,125,0.16)', accent: '#E83E7D', fg: '#3B1E2B', muted: '#8E5B70', sep: 'rgba(232,62,125,0.12)' },
+      xianxia: isDark
+        ? { bg0: '#16241F', bg1: '#0C100F', glow: 'rgba(217,172,96,0.20)', card: 'rgba(21,29,26,0.92)', border: 'rgba(217,172,96,0.34)', accent: '#D9AC60', fg: '#F3EEE1', muted: '#A3A89E', sep: 'rgba(217,172,96,0.18)' }
+        : { bg0: '#EAE2CF', bg1: '#F6F2E9', glow: 'rgba(184,115,36,0.14)', card: 'rgba(253,251,247,0.94)', border: 'rgba(184,115,36,0.28)', accent: '#B87324', fg: '#1F2421', muted: '#646B64', sep: 'rgba(31,36,33,0.10)' }
+    };
+    const pal = palettes[styleId] || palettes.apple;
+
     const bgGrad = ctx.createLinearGradient(0, 0, 1170, 2532);
-    if (isDark) { bgGrad.addColorStop(0, '#070C18'); bgGrad.addColorStop(1, '#000000'); }
-    else { bgGrad.addColorStop(0, '#E8F0FC'); bgGrad.addColorStop(1, '#F5F5F7'); }
+    bgGrad.addColorStop(0, pal.bg0);
+    bgGrad.addColorStop(1, pal.bg1);
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, 1170, 2532);
 
-    const accent = isDark ? '#0A84FF' : '#0071E3';
     const rad = ctx.createRadialGradient(320, 960, 40, 320, 960, 680);
-    rad.addColorStop(0, isDark ? 'rgba(10,132,255,0.22)' : 'rgba(0,113,227,0.14)');
-    rad.addColorStop(1, 'rgba(0,113,227,0)');
+    rad.addColorStop(0, pal.glow);
+    rad.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = rad;
     ctx.fillRect(0, 0, 1170, 2532);
 
@@ -2967,33 +3309,82 @@ Script.complete();`;
       ctx.closePath();
     }
 
-    roundRect(96, 1030, 978, 900, 68);
-    ctx.fillStyle = isDark ? 'rgba(28,28,30,0.88)' : 'rgba(255,255,255,0.88)';
+    const cardRadius = styleId === 'xianxia' ? 40 : (styleId === 'kitty' ? 76 : 68);
+    roundRect(96, 1030, 978, 900, cardRadius);
+    ctx.fillStyle = pal.card;
     ctx.fill();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.06)';
+    ctx.lineWidth = styleId === 'xianxia' ? 3 : 2;
+    ctx.strokeStyle = pal.border;
     ctx.stroke();
 
-    const fg = isDark ? '#F5F5F7' : '#1D1D1F';
-    const muted = isDark ? '#98989D' : '#6E6E73';
-    const sep = isDark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.07)';
+    if (styleId === 'xianxia') {
+      roundRect(114, 1048, 942, 864, 28);
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = isDark ? 'rgba(217,172,96,0.22)' : 'rgba(184,115,36,0.20)';
+      ctx.stroke();
+
+      // Subtle antique lotus seal in top-right of card
+      ctx.save();
+      ctx.translate(950, 1148);
+      ctx.strokeStyle = isDark ? 'rgba(217,172,96,0.42)' : 'rgba(184,115,36,0.34)';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(0, 0, 40, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0, 0, 26, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = pal.accent;
+      ctx.font = '700 28px "Songti SC", "STSong", serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('道', 0, 10);
+      ctx.restore();
+    } else if (styleId === 'kitty') {
+      // Crisp vector ribbon bow motif in top-right of card
+      ctx.save();
+      ctx.translate(932, 1146);
+      ctx.fillStyle = isDark ? 'rgba(255,111,165,0.28)' : 'rgba(232,62,125,0.16)';
+      ctx.strokeStyle = pal.accent;
+      ctx.lineWidth = 3.5;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.bezierCurveTo(-18, -32, -62, -34, -64, 0);
+      ctx.bezierCurveTo(-62, 34, -18, 32, 0, 0);
+      ctx.bezierCurveTo(18, -32, 62, -34, 64, 0);
+      ctx.bezierCurveTo(62, 34, 18, 32, 0, 0);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0, 0, 14, 0, Math.PI * 2);
+      ctx.fillStyle = pal.accent;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    const accent = pal.accent;
+    const fg = pal.fg;
+    const muted = pal.muted;
+    const sep = pal.sep;
     const fontFamily = '-apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif';
+    const headingFamily = styleId === 'xianxia'
+      ? '"Songti SC", "STSong", "Noto Serif SC", Georgia, serif'
+      : fontFamily;
 
     ctx.fillStyle = accent;
     ctx.font = `600 32px ${fontFamily}`;
     ctx.fillText(`${pinned.tag} · ${pinned.targetDate}`, 156, 1125);
 
     ctx.fillStyle = fg;
-    ctx.font = `700 48px ${fontFamily}`;
-    ctx.fillText(pinned.name, 156, 1192);
+    ctx.font = `700 48px ${headingFamily}`;
+    ctx.fillText(pinned.name.length > 16 ? `${pinned.name.slice(0, 16)}…` : pinned.name, 156, 1196);
 
     ctx.font = `700 144px ${fontFamily}`;
     const daysText = String(pinned.daysLeft);
     ctx.fillText(daysText, 156, 1352);
     const daysWidth = ctx.measureText(daysText).width;
     ctx.fillStyle = muted;
-    ctx.font = `500 44px ${fontFamily}`;
-    ctx.fillText('天', 156 + daysWidth + 14, 1348);
+    ctx.font = `500 44px ${headingFamily}`;
+    ctx.fillText(styleId === 'xianxia' ? '日' : '天', 156 + daysWidth + 14, 1348);
 
     roundRect(156, 1392, 858, 12, 6);
     ctx.fillStyle = sep;
@@ -3020,7 +3411,7 @@ Script.complete();`;
     } else {
       ctx.fillStyle = muted;
       ctx.font = `500 34px ${fontFamily}`;
-      ctx.fillText('前往「今日」添加你的学习任务清单', 156, 1550);
+      ctx.fillText(p.wallpaperFallback, 156, 1550);
     }
 
     ctx.fillStyle = sep;
@@ -3028,12 +3419,17 @@ Script.complete();`;
 
     ctx.fillStyle = muted;
     ctx.font = `500 31px ${fontFamily}`;
-    ctx.fillText(grp ? `${grp.name} · 今日 ${grp.teamPct}%` : `${state.data.user.name} · 连续 ${state.data.user.streak} 天`, 156, 1878);
+    const footerLeft = grp
+      ? `${grp.name} · 今日 ${grp.teamPct}%`
+      : (styleId === 'xianxia'
+        ? `${state.data.user.name} · ${getXianxiaRealm(state.data.user.streak)} · 连续 ${state.data.user.streak} 日`
+        : `${state.data.user.name} · 连续 ${state.data.user.streak} 天`);
+    ctx.fillText(footerLeft, 156, 1878);
 
     ctx.fillStyle = accent;
     ctx.font = `600 31px ${fontFamily}`;
     ctx.textAlign = 'right';
-    ctx.fillText(`今日 ${todayStats.done}/${todayStats.total}`, 1014, 1878);
+    ctx.fillText(`${p.tileProgressToday} ${todayStats.done}/${todayStats.total}`, 1014, 1878);
     ctx.textAlign = 'left';
     ctx.restore();
 
@@ -3097,6 +3493,8 @@ Script.complete();`;
   }, { passive: true });
 
   document.getElementById('nav-user-btn').addEventListener('click', openAccountSheet);
+  const navStyleBtn = document.getElementById('nav-style-btn');
+  if (navStyleBtn) navStyleBtn.addEventListener('click', openStylePackSheet);
   document.getElementById('nav-focus-btn').addEventListener('click', openFocusSheet);
   document.getElementById('nav-theme-btn').addEventListener('click', () => {
     applyTheme(state.theme === 'dark' ? 'light' : 'dark');
@@ -3121,6 +3519,7 @@ Script.complete();`;
     const action = btn.dataset.action;
 
     if (action === 'close-sheet') return closeSheet();
+    if (action === 'open-style-packs') return openStylePackSheet();
     if (action === 'open-add-task') return openTaskEditorSheet(null);
     if (action === 'open-add-task-in-cat') return openTaskEditorSheet(null, btn.dataset.category || '');
     if (action === 'open-manage-categories') return openManageCategoriesSheet();
@@ -3192,9 +3591,10 @@ Script.complete();`;
       if (!nextDone) task.completedDates = task.completedDates.filter((d) => d !== dateStr);
 
       const st = getDayStats(state.data.tasks, dateStr);
+      const p = getPack();
       if (nextDone) {
-        if (st.total > 0 && st.done === st.total) showHud(`${getRelativeDayTitle(dateStr)}全部任务达成`, 'var(--green)');
-        else showHud(dateStr === todayKey() ? '今日打卡完成' : `已标记 ${formatDateCN(dateStr)} 完成`);
+        if (st.total > 0 && st.done === st.total) showHud(state.stylePack === 'apple' ? `${getRelativeDayTitle(dateStr)}${p.hudAllDone}` : p.hudAllDone, 'var(--green)');
+        else showHud(dateStr === todayKey() ? p.hudCheckin : `已标记 ${formatDateCN(dateStr)} 完成`);
       }
 
       try {
@@ -3293,7 +3693,8 @@ Script.complete();`;
           body: JSON.stringify({ fromUserId: state.userId, toUserId: targetUserId, kind })
         });
         await loadBootstrap(true);
-        showHud(kind === 'cheer' ? `已鼓励 ${btn.dataset.name}` : `已拍一拍提醒 ${btn.dataset.name}`, 'var(--accent)');
+        const p = getPack();
+        showHud(kind === 'cheer' ? p.cheerHud(btn.dataset.name) : p.nudgeHud(btn.dataset.name), 'var(--accent)');
       } catch (err) { showHud(err.message, 'var(--red)'); }
       return;
     }
@@ -3385,6 +3786,7 @@ Script.complete();`;
     });
   }
 
+  applyStylePack(state.stylePack);
   applyTheme(state.theme);
   checkWeChatBrowser();
   parseUrlActions();

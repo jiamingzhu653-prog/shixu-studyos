@@ -2216,3 +2216,254 @@ input:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ==========================================================================
+   Selectable Theme Packs:
+   1. Apple Original (default: data-style="apple" — untouched pure Apple HIG)
+   2. Hello Kitty Pastel Sweet (data-style="kitty" — Light & Dark Rose)
+   3. Xianxia Guofeng Cultivation (data-style="xianxia" — Jade Parchment & Obsidian Gold)
+   ========================================================================== */
+
+/* --- Theme Pack 2: Hello Kitty Pastel Sweet (Light & Dark) --- */
+html[data-style="kitty"] {
+  --bg-canvas: #FFF5F8;
+  --bg-page-outer: #FCEAF0;
+  --bg-surface: #FFFFFF;
+  --bg-surface-secondary: #FFEBF2;
+  --bg-surface-hover: #FFF9FB;
+  --bg-frosted: rgba(255, 245, 248, 0.84);
+  --bg-frosted-strong: rgba(255, 255, 255, 0.92);
+  --bg-sheet: #FFF7FA;
+
+  --text-primary: #3D1F2D;
+  --text-secondary: #8A5C70;
+  --text-tertiary: #B38A9B;
+
+  --border-hairline: rgba(235, 76, 134, 0.13);
+  --border-separator: rgba(235, 76, 134, 0.14);
+  --shadow-card: 0 4px 18px rgba(235, 76, 134, 0.08), 0 1px 3px rgba(235, 76, 134, 0.05);
+  --shadow-hero: 0 14px 32px rgba(244, 67, 132, 0.25), 0 2px 8px rgba(244, 67, 132, 0.14);
+
+  --accent: #F04383;
+  --accent-hover: #FF5795;
+  --accent-soft: rgba(240, 67, 131, 0.12);
+  --green: #38C976;
+  --orange: #FF8F5E;
+  --red: #F2436B;
+
+  --radius-md: 20px;
+  --radius-lg: 26px;
+}
+
+html[data-style="kitty"][data-theme="dark"] {
+  --bg-canvas: #160D12;
+  --bg-page-outer: #10080C;
+  --bg-surface: #24161E;
+  --bg-surface-secondary: #331F2A;
+  --bg-surface-hover: #2C1B24;
+  --bg-frosted: rgba(24, 14, 19, 0.84);
+  --bg-frosted-strong: rgba(36, 22, 30, 0.92);
+  --bg-sheet: #21141B;
+
+  --text-primary: #FFEFF5;
+  --text-secondary: #C89EB0;
+  --text-tertiary: #8E6577;
+
+  --border-hairline: rgba(255, 132, 178, 0.15);
+  --border-separator: rgba(255, 132, 178, 0.14);
+  --shadow-card: 0 4px 18px rgba(0, 0, 0, 0.38);
+  --shadow-hero: 0 14px 34px rgba(0, 0, 0, 0.55);
+
+  --accent: #FF6BA3;
+  --accent-hover: #FF85B4;
+  --accent-soft: rgba(255, 107, 163, 0.18);
+}
+
+html[data-style="kitty"] .hero-countdown {
+  background: linear-gradient(145deg, #FF6A9F 0%, #E83E7D 100%);
+}
+
+html[data-style="kitty"][data-theme="dark"] .hero-countdown {
+  background: linear-gradient(145deg, #D93E78 0%, #9E2455 100%);
+}
+
+html[data-style="kitty"] .fab-add {
+  box-shadow: 0 10px 24px rgba(240, 67, 131, 0.36);
+}
+
+html[data-style="kitty"] .hud-pill {
+  background: #4A1E32;
+  color: #FFF4F8;
+}
+
+/* --- Theme Pack 3: Xianxia Guofeng Cultivation (Light Jade Parchment & Dark Obsidian Gold) --- */
+html[data-style="xianxia"] {
+  --bg-canvas: #F6F2E9;
+  --bg-page-outer: #ECE6D8;
+  --bg-surface: #FFFDF8;
+  --bg-surface-secondary: #EFEAE0;
+  --bg-surface-hover: #FAF7F0;
+  --bg-frosted: rgba(246, 242, 233, 0.86);
+  --bg-frosted-strong: rgba(255, 253, 248, 0.94);
+  --bg-sheet: #F8F5EE;
+
+  --text-primary: #25201A;
+  --text-secondary: #6E6353;
+  --text-tertiary: #9A8D7B;
+
+  --border-hairline: rgba(150, 118, 66, 0.18);
+  --border-separator: rgba(150, 118, 66, 0.16);
+  --shadow-card: 0 3px 14px rgba(68, 52, 28, 0.06), 0 1px 2px rgba(68, 52, 28, 0.04);
+  --shadow-hero: 0 14px 32px rgba(34, 48, 42, 0.24), 0 2px 8px rgba(34, 48, 42, 0.14);
+
+  --accent: #B87324;
+  --accent-hover: #C9822F;
+  --accent-soft: rgba(184, 115, 36, 0.13);
+  --green: #2B8A68;
+  --orange: #C6782B;
+  --red: #B83B32;
+
+  --radius-md: 14px;
+  --radius-lg: 18px;
+}
+
+html[data-style="xianxia"][data-theme="dark"] {
+  --bg-canvas: #0D1110;
+  --bg-page-outer: #070A09;
+  --bg-surface: #151C1A;
+  --bg-surface-secondary: #1F2825;
+  --bg-surface-hover: #1A2320;
+  --bg-frosted: rgba(13, 17, 16, 0.86);
+  --bg-frosted-strong: rgba(21, 28, 26, 0.94);
+  --bg-sheet: #141B19;
+
+  --text-primary: #EFE9DC;
+  --text-secondary: #A49B8B;
+  --text-tertiary: #6C665A;
+
+  --border-hairline: rgba(212, 168, 86, 0.18);
+  --border-separator: rgba(212, 168, 86, 0.14);
+  --shadow-card: 0 4px 18px rgba(0, 0, 0, 0.48);
+  --shadow-hero: 0 16px 36px rgba(0, 0, 0, 0.65);
+
+  --accent: #D4A14E;
+  --accent-hover: #E3B362;
+  --accent-soft: rgba(212, 161, 78, 0.16);
+  --green: #3EB489;
+  --red: #D9534F;
+}
+
+html[data-style="xianxia"] .page-title,
+html[data-style="xianxia"] .hero-exam-name,
+html[data-style="xianxia"] .category-big-title,
+html[data-style="xianxia"] .sheet-title {
+  font-family: "Songti SC", "STSong", "Noto Serif SC", "PingFang SC", Georgia, serif;
+  letter-spacing: 0.01em;
+}
+
+html[data-style="xianxia"] .hero-countdown {
+  background: linear-gradient(145deg, #1E332C 0%, #12211D 100%);
+  border: 1px solid rgba(212, 161, 78, 0.34);
+}
+
+html[data-style="xianxia"][data-theme="dark"] .hero-countdown {
+  background: linear-gradient(145deg, #1A2A24 0%, #0E1714 100%);
+  border: 1px solid rgba(212, 161, 78, 0.32);
+}
+
+html[data-style="xianxia"] .hero-bar-fill {
+  background: #E2B86B;
+}
+
+html[data-style="xianxia"] .fab-add {
+  background: linear-gradient(145deg, #C78432, #9F5F18);
+  box-shadow: 0 10px 24px rgba(159, 95, 24, 0.34);
+}
+
+html[data-style="xianxia"] .hud-pill {
+  background: #1B2924;
+  color: #F4EAD5;
+  border: 1px solid rgba(212, 161, 78, 0.32);
+}
+
+/* Decorative Hero Theme Motif (Crisp minimal corner emblem) */
+.hero-theme-motif {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  pointer-events: none;
+  opacity: 0.92;
+}
+
+.realm-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* Theme Pack Selector Sheet Cards */
+.theme-pack-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.theme-pack-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: var(--bg-surface);
+  border: 1.5px solid var(--border-hairline);
+  text-align: left;
+  transition: transform var(--dur-fast) var(--ease-apple), border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
+}
+
+.theme-pack-card:active {
+  transform: scale(0.98);
+}
+
+.theme-pack-card.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.theme-pack-swatch {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 20px;
+  color: #FFFFFF;
+}
+
+.theme-pack-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.theme-pack-name {
+  font-size: 15px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.theme-pack-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 3px;
+  line-height: 1.4;
+}
