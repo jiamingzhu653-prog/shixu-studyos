@@ -1,9 +1,8 @@
 (() => {
   'use strict';
 
-  const STORE_KEY = 'shixu_raw_store_v2';
-  const AVATAR_COLORS = ['#0071E3', '#34C759', '#FF9500', '#FF3B30', '#0A84FF', '#30B0C7'];
-  const SUBJECT_PRESETS = ['数学', '英语', '政治', '专业课', '词汇', '复盘', '日常'];
+  const STORE_KEY = 'shixu_raw_store_v3';
+  const SYSTEM_COLORS = ['#0071E3', '#34C759', '#FF9500', '#FF3B30', '#30B0C7', '#5856D6'];
   const EXAM_PRESETS = [
     { name: '全国考研初试', tag: '考试倒计时', days: 90, color: '#0071E3' },
     { name: '国家公务员笔试', tag: '考试倒计时', days: 60, color: '#FF9500' },
@@ -13,18 +12,60 @@
     { name: '全国普通高考', tag: '考试倒计时', days: 180, color: '#30B0C7' }
   ];
 
+  const WEEKDAYS_SHORT = ['日', '一', '二', '三', '四', '五', '六'];
+
   const TAB_TITLES = {
-    today: '今日学习',
+    today: '学习序列',
     groups: '学习小组',
     exams: '目标倒计时',
     desktop: 'iOS 桌面与组件'
   };
+
+  function todayKey() {
+    const now = new Date();
+    return formatDateISO(now);
+  }
+
+  function formatDateISO(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function parseDateISO(str) {
+    const [y, m, d] = str.split('-').map(Number);
+    return new Date(y, (m || 1) - 1, d || 1);
+  }
+
+  function shiftDateISO(baseStr, deltaDays) {
+    const d = parseDateISO(baseStr);
+    d.setDate(d.getDate() + deltaDays);
+    return formatDateISO(d);
+  }
+
+  function addDaysStr(days) {
+    return shiftDateISO(todayKey(), days);
+  }
+
+  function currentMonthKey(dateStr = todayKey()) {
+    return dateStr.slice(0, 7); // YYYY-MM
+  }
+
+  function shiftMonthKey(ym, deltaMonths) {
+    const [y, m] = ym.split('-').map(Number);
+    const d = new Date(y, m - 1 + deltaMonths, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  }
 
   const state = {
     mode: 'auto', // 'server' | 'local'
     userId: localStorage.getItem('shixu_raw_user_id') || '',
     theme: localStorage.getItem('shixu_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
     activeTab: 'today',
+    selectedDate: todayKey(),
+    viewMonth: currentMonthKey(),
+    showMonthCalendar: false,
     activeGroupId: null,
     pendingInvite: null,
     data: null,
@@ -38,7 +79,7 @@
     }
   };
 
-  const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('shixu_raw_realtime') : null;
+  const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('shixu_raw_realtime_v3') : null;
 
   // DOM refs
   const topNav = document.getElementById('top-nav');
@@ -63,44 +104,33 @@
       .replace(/"/g, '&quot;');
   }
 
-  function todayKey() {
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-  }
-
-  function addDaysStr(days) {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    d.setDate(d.getDate() + days);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-  }
-
   function daysUntil(dateStr) {
-    const now = new Date();
-    now.setHours(0, 0, 0, 0);
-    const target = new Date(`${dateStr}T00:00:00`);
+    const now = parseDateISO(todayKey());
+    const target = parseDateISO(dateStr);
     if (Number.isNaN(target.getTime())) return 0;
     return Math.max(0, Math.ceil((target.getTime() - now.getTime()) / 86400000));
   }
 
   function calcProgress(startDate, targetDate) {
-    const start = new Date(`${startDate}T00:00:00`).getTime();
-    const end = new Date(`${targetDate}T00:00:00`).getTime();
-    const now = new Date().setHours(0, 0, 0, 0);
+    const start = parseDateISO(startDate).getTime();
+    const end = parseDateISO(targetDate).getTime();
+    const now = parseDateISO(todayKey()).getTime();
     if (!start || !end || end <= start) return 100;
     return Math.min(100, Math.max(4, Math.round(((now - start) / (end - start)) * 100)));
   }
 
-  function formatDateCN() {
-    const now = new Date();
-    const week = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][now.getDay()];
-    return `${now.getMonth() + 1}月${now.getDate()}日 ${week}`;
+  function formatDateCN(dateStr = todayKey()) {
+    const d = parseDateISO(dateStr);
+    return `${d.getMonth() + 1}月${d.getDate()}日 星期${WEEKDAYS_SHORT[d.getDay()]}`;
+  }
+
+  function getRelativeDayTitle(dateStr) {
+    const today = todayKey();
+    if (dateStr === today) return '今日学习';
+    if (dateStr === shiftDateISO(today, -1)) return '昨日复盘';
+    if (dateStr === shiftDateISO(today, 1)) return '明日计划';
+    const d = parseDateISO(dateStr);
+    return `${d.getMonth() + 1}月${d.getDate()}日任务`;
   }
 
   function timeAgo(ts) {
@@ -126,6 +156,24 @@
     let out = '';
     for (let i = 0; i < 6; i++) out += chars[Math.floor(Math.random() * chars.length)];
     return out;
+  }
+
+  function isTaskOnDate(task, dateStr) {
+    if (!task.repeatDaily) return task.date === dateStr;
+    return dateStr >= task.date;
+  }
+
+  function isTaskDoneOnDate(task, dateStr) {
+    if (Array.isArray(task.completedDates)) return task.completedDates.includes(dateStr);
+    return Boolean(task.done && task.date === dateStr);
+  }
+
+  function getDayStats(tasks, dateStr) {
+    const list = (tasks || []).filter((t) => isTaskOnDate(t, dateStr));
+    const done = list.filter((t) => isTaskDoneOnDate(t, dateStr)).length;
+    const total = list.length;
+    const pct = total ? Math.round((done / total) * 100) : 0;
+    return { list, done, total, pct };
   }
 
   function encodeShareGroup(g) {
@@ -170,9 +218,7 @@
     hudDot.style.background = dotColor;
     hudPill.classList.add('is-visible');
     clearTimeout(hudTimer);
-    hudTimer = setTimeout(() => {
-      hudPill.classList.remove('is-visible');
-    }, 2400);
+    hudTimer = setTimeout(() => hudPill.classList.remove('is-visible'), 2400);
   }
 
   async function copyText(str, okMsg) {
@@ -200,6 +246,7 @@
     return {
       lastRolloverDate: todayKey(),
       users: [],
+      categories: [],
       exams: [],
       tasks: [],
       groups: [],
@@ -214,16 +261,9 @@
       s = createEmptyLocalStore();
       localStorage.setItem(STORE_KEY, JSON.stringify(s));
     }
+    if (!Array.isArray(s.categories)) s.categories = [];
     const today = todayKey();
     if (s.lastRolloverDate !== today) {
-      s.tasks = s.tasks.filter((t) => t.repeatDaily || t.date === today);
-      for (const t of s.tasks) {
-        if (t.repeatDaily && t.date !== today) {
-          t.done = false;
-          t.date = today;
-          t.completedAt = null;
-        }
-      }
       for (const u of s.users) u.focusMinutesToday = 0;
       s.lastRolloverDate = today;
       localStorage.setItem(STORE_KEY, JSON.stringify(s));
@@ -236,16 +276,40 @@
     if (bc) bc.postMessage({ type: 'sync', toastMsg, fromUserId: state.userId });
   }
 
+  function ensureLocalCategory(s, userId, name, color) {
+    const clean = String(name || '').trim().slice(0, 18);
+    if (!clean) return null;
+    let existing = s.categories.find((c) => c.userId === userId && c.name === clean);
+    if (!existing) {
+      const userCats = s.categories.filter((c) => c.userId === userId);
+      existing = {
+        id: genId('cat'),
+        userId,
+        name: clean,
+        color: color || SYSTEM_COLORS[userCats.length % SYSTEM_COLORS.length]
+      };
+      s.categories.push(existing);
+    }
+    return existing;
+  }
+
   function buildLocalBootstrap(userId) {
     const s = getLocalStore();
     const user = s.users.find((u) => u.id === userId) || s.users[0] || null;
     const today = todayKey();
     if (!user) {
-      return { today, user: null, users: [], tasks: [], exams: [], groups: [] };
+      return { today, user: null, users: [], categories: [], tasks: [], exams: [], groups: [] };
     }
+    const categories = s.categories.filter((c) => c.userId === user.id);
     const tasks = s.tasks
-      .filter((t) => t.userId === user.id && t.date === today)
-      .sort((a, b) => Number(a.done) - Number(b.done));
+      .filter((t) => t.userId === user.id)
+      .map((t) => ({
+        ...t,
+        category: t.category || t.subject || '未分组',
+        completedDates: Array.isArray(t.completedDates) ? t.completedDates : (t.done ? [t.date] : []),
+        done: isTaskDoneOnDate(t, today)
+      }));
+
     const exams = s.exams
       .filter((e) => e.userId === user.id)
       .map((e) => ({ ...e, daysLeft: daysUntil(e.targetDate), progress: calcProgress(e.startDate, e.targetDate) }))
@@ -258,10 +322,8 @@
           .map((uid) => s.users.find((u) => u.id === uid))
           .filter(Boolean)
           .map((u) => {
-            const list = s.tasks.filter((t) => t.userId === u.id && t.date === today);
-            const done = list.filter((t) => t.done).length;
-            const total = list.length;
-            return { ...u, done, total, pct: total ? Math.round((done / total) * 100) : 0 };
+            const st = getDayStats(s.tasks.filter((t) => t.userId === u.id), today);
+            return { ...u, done: st.done, total: st.total, pct: st.pct };
           });
         const totalTasks = members.reduce((a, m) => a + m.total, 0);
         const doneTasks = members.reduce((a, m) => a + m.done, 0);
@@ -288,6 +350,7 @@
       today,
       user,
       users: s.users.map((u) => ({ id: u.id, name: u.name, avatar: u.avatar, color: u.color, streak: u.streak })),
+      categories,
       tasks,
       exams,
       groups
@@ -299,8 +362,7 @@
     const today = todayKey();
 
     if (method === 'POST' && path === '/api/reset') {
-      const empty = createEmptyLocalStore();
-      saveLocalStore(empty);
+      saveLocalStore(createEmptyLocalStore());
       return { ok: true };
     }
 
@@ -311,7 +373,7 @@
         id: genId('u'),
         name,
         avatar: name.slice(0, 1),
-        color: AVATAR_COLORS[s.users.length % AVATAR_COLORS.length],
+        color: SYSTEM_COLORS[s.users.length % SYSTEM_COLORS.length],
         streak: 0,
         focusMinutesToday: 0,
         createdAt: Date.now()
@@ -338,27 +400,78 @@
           grp.memberIds.push(user.id);
         }
         if (grp) {
-          s.feeds.push({ id: genId('f'), groupId: grp.id, userId: user.id, type: 'join', text: `加入了学习小组`, createdAt: Date.now(), likedBy: [] });
+          s.feeds.push({ id: genId('f'), groupId: grp.id, userId: user.id, type: 'join', text: '加入了学习小组', createdAt: Date.now(), likedBy: [] });
         }
       }
-
       saveLocalStore(s);
       return { user };
     }
 
+    // Categories CRUD
+    if (method === 'POST' && path === '/api/categories') {
+      const uid = body.userId || state.userId;
+      const name = String(body.name || '').trim().slice(0, 18);
+      if (!name) throw new Error('请输入任务大标题');
+      const category = ensureLocalCategory(s, uid, name, body.color);
+      saveLocalStore(s);
+      return { category };
+    }
+
+    const cMatch = path.match(/^\/api\/categories\/([^/]+)$/);
+    if (cMatch && method === 'PATCH') {
+      const cat = s.categories.find((c) => c.id === cMatch[1]);
+      if (!cat) throw new Error('大标题不存在');
+      const oldName = cat.name;
+      if (typeof body.name === 'string' && body.name.trim()) {
+        const nextName = body.name.trim().slice(0, 18);
+        cat.name = nextName;
+        for (const t of s.tasks) {
+          if (t.userId === cat.userId && (t.category === oldName || t.subject === oldName)) {
+            t.category = nextName;
+            t.subject = nextName;
+          }
+        }
+      }
+      if (typeof body.color === 'string' && body.color) cat.color = body.color;
+      saveLocalStore(s);
+      return { category: cat };
+    }
+
+    if (cMatch && method === 'DELETE') {
+      const idx = s.categories.findIndex((c) => c.id === cMatch[1]);
+      if (idx !== -1) {
+        const [rem] = s.categories.splice(idx, 1);
+        for (const t of s.tasks) {
+          if (t.userId === rem.userId && t.category === rem.name) {
+            t.category = '未分组';
+            t.subject = '未分组';
+          }
+        }
+      }
+      saveLocalStore(s);
+      return { ok: true };
+    }
+
+    // Tasks CRUD
     if (method === 'POST' && path === '/api/tasks') {
+      const uid = body.userId || state.userId;
       const title = String(body.title || '').trim().slice(0, 60);
       if (!title) throw new Error('请输入任务名称');
+      const categoryName = String(body.category || body.subject || '未分组').trim().slice(0, 18) || '未分组';
+      if (categoryName !== '未分组') ensureLocalCategory(s, uid, categoryName, body.categoryColor);
+
+      const taskDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : today;
       const task = {
         id: genId('t'),
-        userId: body.userId || state.userId,
+        userId: uid,
         title,
-        subject: String(body.subject || '日常').trim().slice(0, 12),
+        category: categoryName,
+        subject: categoryName,
         durationMin: Math.min(360, Math.max(5, Number(body.durationMin) || 30)),
         repeatDaily: Boolean(body.repeatDaily),
-        done: false,
-        date: today,
-        completedAt: null
+        date: taskDate,
+        completedDates: [],
+        createdAt: Date.now()
       };
       s.tasks.unshift(task);
       saveLocalStore(s);
@@ -369,21 +482,24 @@
     if (tMatch && method === 'PATCH') {
       const task = s.tasks.find((t) => t.id === tMatch[1]);
       if (!task) throw new Error('任务不存在');
-      const prev = task.done;
+      const targetDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : today;
+      if (!Array.isArray(task.completedDates)) task.completedDates = [];
+      const prev = task.completedDates.includes(targetDate);
+
       if (typeof body.done === 'boolean') {
-        task.done = body.done;
-        task.completedAt = body.done ? Date.now() : null;
+        if (body.done && !prev) task.completedDates.push(targetDate);
+        if (!body.done && prev) task.completedDates = task.completedDates.filter((d) => d !== targetDate);
       }
+
       let toastMsg = null;
-      if (!prev && task.done) {
+      if (!prev && body.done === true && targetDate === today) {
         const u = s.users.find((x) => x.id === task.userId);
         if (u && u.streak === 0) u.streak = 1;
-        const myList = s.tasks.filter((t) => t.userId === task.userId && t.date === today);
-        const doneCnt = myList.filter((t) => t.done).length;
+        const st = getDayStats(s.tasks.filter((t) => t.userId === task.userId), today);
         for (const g of s.groups.filter((gr) => gr.memberIds.includes(task.userId))) {
-          const text = doneCnt === myList.length
-            ? `完成了今日全部 ${myList.length} 项学习任务，达成率 100%`
-            : `打卡「${task.title}」· ${task.durationMin} 分钟`;
+          const text = st.done === st.total && st.total > 0
+            ? `完成了今日全部 ${st.total} 项学习任务，达成率 100%`
+            : `打卡「${task.category} · ${task.title}」`;
           s.feeds.push({ id: genId('f'), groupId: g.id, userId: task.userId, type: 'checkin', text, createdAt: Date.now(), likedBy: [] });
         }
         toastMsg = `${u ? u.name : '成员'} 刚刚完成打卡：${task.title.slice(0, 14)}`;
@@ -399,11 +515,10 @@
       return { ok: true };
     }
 
+    // Exams
     if (method === 'POST' && path === '/api/exams') {
       const uid = body.userId || state.userId;
-      if (body.pinned !== false) {
-        for (const e of s.exams) if (e.userId === uid) e.pinned = false;
-      }
+      if (body.pinned !== false) for (const e of s.exams) if (e.userId === uid) e.pinned = false;
       const exam = {
         id: genId('ex'),
         userId: uid,
@@ -444,6 +559,7 @@
       return { ok: true };
     }
 
+    // Focus
     if (method === 'POST' && path === '/api/focus/complete') {
       const u = s.users.find((x) => x.id === (body.userId || state.userId));
       if (u) {
@@ -458,6 +574,7 @@
       return { ok: true };
     }
 
+    // Groups
     if (method === 'POST' && path === '/api/groups') {
       const ownerId = body.userId || state.userId;
       let inviteCode = genInviteCode();
@@ -515,9 +632,7 @@
       const toUser = s.users.find((u) => u.id === body.toUserId);
       if (!fromUser || !toUser) throw new Error('成员不存在');
       const kind = body.kind === 'cheer' ? 'cheer' : 'nudge';
-      const text = kind === 'cheer'
-        ? `给 ${toUser.name} 送上了鼓励`
-        : `拍了拍 ${toUser.name}：该学习打卡啦`;
+      const text = kind === 'cheer' ? `给 ${toUser.name} 送上了鼓励` : `拍了拍 ${toUser.name}：该学习打卡啦`;
       s.feeds.push({ id: genId('f'), groupId: nMatch[1], userId: fromUser.id, type: kind, text, createdAt: Date.now(), likedBy: [] });
       saveLocalStore(s, `${fromUser.name} ${kind === 'cheer' ? '鼓励了' : '拍了拍'} ${toUser.name}`);
       return { ok: true };
@@ -540,12 +655,12 @@
   }
 
   function buildLocalScriptableCode() {
-    const pinned = (state.data && state.data.exams[0]) || { name: '尚未设定目标', targetDate: todayKey() };
-    const tasks = (state.data && state.data.tasks.slice(0, 3)) || [];
+    const today = todayKey();
+    const pinned = (state.data && state.data.exams[0]) || { name: '尚未设定目标', targetDate: today };
+    const todayStats = getDayStats(state.data ? state.data.tasks : [], today);
     const appUrl = window.location.origin + window.location.pathname;
-    const tasksJson = JSON.stringify(tasks.map((t) => ({ title: t.title, done: t.done })));
+    const tasksJson = JSON.stringify(todayStats.list.slice(0, 3).map((t) => ({ title: `${t.category} · ${t.title}`, done: isTaskDoneOnDate(t, today) })));
     return `// 时序 StudyOS · iOS 桌面实时倒计时小组件 (Scriptable)
-// 1. App Store 免费安装 Scriptable  2. 新建脚本粘贴此代码  3. 桌面长按添加 Scriptable 中号小组件
 const APP_URL = ${JSON.stringify(appUrl)};
 const EXAM_NAME = ${JSON.stringify(pinned.name)};
 const TARGET_DATE = ${JSON.stringify(pinned.targetDate)};
@@ -713,13 +828,154 @@ Script.complete();`;
       navAvatar.style.background = 'var(--accent)';
       navUsername.textContent = '开始使用';
     }
-    compactTitle.textContent = u ? (TAB_TITLES[state.activeTab] || '时序') : '时序';
+    compactTitle.textContent = u
+      ? (state.activeTab === 'today' ? getRelativeDayTitle(state.selectedDate) : (TAB_TITLES[state.activeTab] || '时序'))
+      : '时序';
     const showFab = Boolean(u) && (state.activeTab === 'today' || state.activeTab === 'exams');
     fabAdd.classList.toggle('is-hidden', !showFab);
   }
 
   // =========================================================================
-  // Views (Pure Clean Initial Onboarding + Raw Empty States)
+  // Timeline & Monthly Progress Calendar Builder
+  // =========================================================================
+
+  function buildTimelineSection(tasks) {
+    const today = todayKey();
+    const yesterday = shiftDateISO(today, -1);
+    const tomorrow = shiftDateISO(today, 1);
+    const sel = state.selectedDate;
+
+    // 7-day strip centered around selected date (-3..+3)
+    const railDates = [];
+    for (let i = -3; i <= 3; i++) railDates.push(shiftDateISO(sel, i));
+
+    let monthHtml = '';
+    if (state.showMonthCalendar) {
+      const [y, m] = state.viewMonth.split('-').map(Number);
+      const firstDay = new Date(y, m - 1, 1);
+      const daysInMonth = new Date(y, m, 0).getDate();
+      // Monday-first offset (0=Mon .. 6=Sun)
+      const startOffset = (firstDay.getDay() + 6) % 7;
+
+      let monthDoneCount = 0;
+      let monthPerfectDays = 0;
+      let monthScheduledDays = 0;
+      let monthPctSum = 0;
+
+      const cells = [];
+      for (let pad = 0; pad < startOffset; pad++) {
+        cells.push('<div></div>');
+      }
+      for (let day = 1; day <= daysInMonth; day++) {
+        const ds = `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const st = getDayStats(tasks, ds);
+        if (st.total > 0) {
+          monthScheduledDays++;
+          monthDoneCount += st.done;
+          monthPctSum += st.pct;
+          if (st.done === st.total) monthPerfectDays++;
+        }
+        const ringColor = st.total === 0
+          ? 'transparent'
+          : (st.done === st.total ? 'var(--green)' : (st.done > 0 ? 'var(--accent)' : 'var(--text-tertiary)'));
+        const ringPct = st.total === 0 ? 0 : (st.done > 0 ? st.pct : 100);
+        const ringOpacity = st.total > 0 && st.done === 0 ? '0.28' : '1';
+        const r = 14;
+        const c = 2 * Math.PI * r;
+        const off = c * (1 - ringPct / 100);
+
+        cells.push(`
+          <button class="cal-cell ${ds === sel ? 'is-selected' : ''} ${ds === today ? 'is-today' : ''}" data-action="pick-date" data-date="${ds}">
+            <span class="cal-day-ring">
+              <svg width="34" height="34" viewBox="0 0 34 34">
+                <circle class="ring-track" cx="17" cy="17" r="${r}" stroke-width="2.6" />
+                ${st.total > 0 ? `<circle class="ring-fill" cx="17" cy="17" r="${r}" stroke="${ringColor}" stroke-opacity="${ringOpacity}" stroke-width="2.6" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" />` : ''}
+              </svg>
+              <span class="cal-day-num">${day}</span>
+            </span>
+          </button>
+        `);
+      }
+
+      const avgPct = monthScheduledDays ? Math.round(monthPctSum / monthScheduledDays) : 0;
+
+      monthHtml = `
+        <div class="month-panel">
+          <div class="month-nav">
+            <span class="month-label tabular">${y} 年 ${m} 月任务进程</span>
+            <div class="month-nav-btns">
+              <button class="month-arrow-btn" data-action="shift-month" data-delta="-1" aria-label="上个月">‹</button>
+              <button class="btn-secondary btn-sm" style="padding:4px 10px;font-size:11px;" data-action="pick-date" data-date="${today}">回今日</button>
+              <button class="month-arrow-btn" data-action="shift-month" data-delta="1" aria-label="下个月">›</button>
+            </div>
+          </div>
+
+          <div class="month-kpi-strip">
+            <div class="month-kpi">
+              <div class="month-kpi-val">${monthDoneCount}</div>
+              <div class="month-kpi-lbl">本月已完成</div>
+            </div>
+            <div class="month-kpi">
+              <div class="month-kpi-val" style="color:var(--green);">${monthPerfectDays} 天</div>
+              <div class="month-kpi-lbl">全勤达标</div>
+            </div>
+            <div class="month-kpi">
+              <div class="month-kpi-val" style="color:var(--accent);">${avgPct}%</div>
+              <div class="month-kpi-lbl">月均达成率</div>
+            </div>
+          </div>
+
+          <div class="cal-weekdays">
+            <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+          </div>
+          <div class="cal-grid">${cells.join('')}</div>
+          <div class="cal-legend">
+            <span class="cal-legend-item"><span class="legend-dot" style="background:var(--green);"></span>全部完成</span>
+            <span class="cal-legend-item"><span class="legend-dot" style="background:var(--accent);"></span>进行中</span>
+            <span class="cal-legend-item"><span class="legend-dot" style="background:var(--text-tertiary);opacity:0.45;"></span>待开始</span>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <section class="card timeline-card">
+        <div class="timeline-top">
+          <div class="segmented-control" role="tablist" aria-label="快速切换昨日今日明日">
+            <button class="seg-btn ${sel === yesterday ? 'is-active' : ''}" data-action="pick-date" data-date="${yesterday}">昨日</button>
+            <button class="seg-btn ${sel === today ? 'is-active' : ''}" data-action="pick-date" data-date="${today}">今日</button>
+            <button class="seg-btn ${sel === tomorrow ? 'is-active' : ''}" data-action="pick-date" data-date="${tomorrow}">明日</button>
+          </div>
+          <button class="month-toggle-btn ${state.showMonthCalendar ? 'is-open' : ''}" data-action="toggle-month-cal">
+            <span>${state.showMonthCalendar ? '收起月历' : '月进程'}</span>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 9l6 6 6-6"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="date-rail">
+          ${railDates.map((ds) => {
+            const d = parseDateISO(ds);
+            const st = getDayStats(tasks, ds);
+            const dotCls = st.total === 0 ? '' : (st.done === st.total ? 'has-all' : (st.done > 0 ? 'has-partial' : 'has-todo'));
+            return `
+              <button class="date-chip ${ds === sel ? 'is-selected' : ''} ${ds === today ? 'is-today' : ''}" data-action="pick-date" data-date="${ds}">
+                <span class="date-chip-wk">${WEEKDAYS_SHORT[d.getDay()]}</span>
+                <span class="date-chip-num">${d.getDate()}</span>
+                <span class="date-chip-dot ${dotCls}"></span>
+              </button>
+            `;
+          }).join('')}
+        </div>
+
+        ${monthHtml}
+      </section>
+    `;
+  }
+
+  // =========================================================================
+  // Views
   // =========================================================================
 
   function renderView(animate = true) {
@@ -732,7 +988,6 @@ Script.complete();`;
       viewContainer.style.animation = '';
     }
 
-    // If completely raw (no user created yet), show Apple Welcome Onboarding
     if (!state.data.user) {
       viewContainer.innerHTML = buildWelcomeOnboardingView();
       const form = document.getElementById('form-welcome-start');
@@ -790,7 +1045,7 @@ Script.complete();`;
         <img src="./icons/apple-touch-icon.png" alt="时序图标" style="width:76px;height:76px;border-radius:18px;box-shadow:0 12px 28px rgba(0,113,227,0.26);margin-bottom:18px;" />
         <h1 class="page-title" style="font-size:30px;">欢迎使用「时序」</h1>
         <p style="font-size:14px;line-height:1.6;color:var(--text-secondary);margin:10px auto 24px;max-width:300px;">
-          制定每日学习任务、追踪考试倒计时、组建学习小组，并将进度直接呈现于 iPhone 桌面与锁屏。
+          自定义任务大标题、按日与按月追踪学习时间轴、设定考试倒计时并组建学习小组。
         </p>
 
         ${invite && invite.sharedGroup ? `
@@ -813,12 +1068,12 @@ Script.complete();`;
 
         <div style="margin-top:20px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center;">
           <div class="card" style="padding:12px 8px;">
-            <div style="font-size:13px;font-weight:600;">每日清单</div>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">自定义与重复</div>
+            <div style="font-size:13px;font-weight:600;">自定义大标题</div>
+            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">按科目自由命名</div>
           </div>
           <div class="card" style="padding:12px 8px;">
-            <div style="font-size:13px;font-weight:600;">目标倒计时</div>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">桌面锁屏直达</div>
+            <div style="font-size:13px;font-weight:600;">月度时间轴</div>
+            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">昨今明与月进程</div>
           </div>
           <div class="card" style="padding:12px 8px;">
             <div style="font-size:13px;font-weight:600;">学习小组</div>
@@ -830,18 +1085,44 @@ Script.complete();`;
   }
 
   function buildTodayView() {
-    const { user, tasks, exams, groups } = state.data;
+    const { user, tasks, categories, exams, groups } = state.data;
+    const sel = state.selectedDate;
     const pinned = exams[0];
-    const doneCount = tasks.filter((t) => t.done).length;
-    const totalCount = tasks.length;
-    const pct = totalCount ? Math.round((doneCount / totalCount) * 100) : 0;
+    const dayStats = getDayStats(tasks, sel);
     const primaryGroup = groups[0];
+
+    // Group selected date's tasks under Custom Big Titles (categories)
+    const colorMap = new Map();
+    for (const c of categories) colorMap.set(c.name, c.color);
+
+    const groupMap = new Map();
+    // Preserve custom category order for categories that have tasks on this day
+    for (const c of categories) {
+      const catTasks = dayStats.list.filter((t) => t.category === c.name);
+      if (catTasks.length) groupMap.set(c.name, catTasks);
+    }
+    // Include any tasks whose category isn't in categories list (e.g. '未分组')
+    for (const t of dayStats.list) {
+      const key = t.category || '未分组';
+      if (!groupMap.has(key)) groupMap.set(key, []);
+      if (!groupMap.get(key).includes(t)) groupMap.get(key).push(t);
+    }
+
+    const groupedEntries = Array.from(groupMap.entries()).map(([catName, items]) => {
+      const sorted = [...items].sort((a, b) => Number(isTaskDoneOnDate(a, sel)) - Number(isTaskDoneOnDate(b, sel)));
+      return {
+        name: catName,
+        color: colorMap.get(catName) || 'var(--accent)',
+        items: sorted,
+        done: sorted.filter((t) => isTaskDoneOnDate(t, sel)).length
+      };
+    });
 
     return `
       <div class="page-header">
         <div>
-          <div class="page-date">${formatDateCN()}</div>
-          <h1 class="page-title">今日学习</h1>
+          <div class="page-date">${formatDateCN(sel)}</div>
+          <h1 class="page-title">${getRelativeDayTitle(sel)}</h1>
         </div>
         ${primaryGroup ? `
           <button class="btn-secondary btn-sm" data-action="goto-groups">小组 ${primaryGroup.teamPct}%</button>
@@ -870,25 +1151,27 @@ Script.complete();`;
           </div>
         </section>
       ` : `
-        <section class="card card-padded" style="text-align:center;padding:24px 18px;">
-          <div style="font-size:16px;font-weight:700;letter-spacing:-0.015em;">尚未设定考试或目标倒计时</div>
-          <p style="font-size:13px;color:var(--text-secondary);margin:6px 0 16px;line-height:1.5;">
-            设定一个关键考试日期或个人目标，首页与 iPhone 锁屏将自动为您精准倒数。
-          </p>
-          <button class="btn-primary btn-sm" data-action="open-add-exam">+ 设定第一个目标倒计时</button>
+        <section class="card card-padded" style="text-align:center;padding:20px 18px;">
+          <div style="font-size:15px;font-weight:700;">尚未设定考试或目标倒计时</div>
+          <p style="font-size:12px;color:var(--text-secondary);margin:5px 0 12px;">设定考试或目标日期，首页与锁屏自动倒数。</p>
+          <button class="btn-primary btn-sm" data-action="open-add-exam">+ 设定目标倒计时</button>
         </section>
       `}
 
+      <!-- Task Sequence Timeline: Yesterday / Today / Tomorrow + Full Month Calendar -->
+      ${buildTimelineSection(tasks)}
+
+      <!-- Day Completion & Focus Strip -->
       <section class="summary-strip">
         <div class="card summary-tile">
           <div>
-            <div class="summary-label">今日任务</div>
-            <div class="summary-value tabular">${doneCount} / ${totalCount}</div>
+            <div class="summary-label">${sel === todayKey() ? '今日进度' : '当日进度'}</div>
+            <div class="summary-value tabular">${dayStats.done} / ${dayStats.total}</div>
             <div class="summary-sub">已坚持 ${user.streak} 天</div>
           </div>
           <div class="ring-box">
-            ${ringSVG(pct, 48, 5, 'var(--accent)')}
-            <span class="ring-center">${pct}%</span>
+            ${ringSVG(dayStats.pct, 48, 5, dayStats.pct === 100 && dayStats.total > 0 ? 'var(--green)' : 'var(--accent)')}
+            <span class="ring-center">${dayStats.pct}%</span>
           </div>
         </div>
 
@@ -905,41 +1188,69 @@ Script.complete();`;
         </button>
       </section>
 
+      <!-- Custom Category Big-Title Section Header -->
       <div class="section-header">
-        <h2 class="section-title">今日任务清单</h2>
-        <button class="section-action" data-action="open-add-task">+ 添加任务</button>
+        <h2 class="section-title">${formatDateCN(sel)} · 任务序列</h2>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <button class="section-action" style="color:var(--text-secondary);" data-action="open-manage-categories">管理大标题</button>
+          <button class="section-action" data-action="open-add-task">+ 添加任务</button>
+        </div>
       </div>
 
-      <section class="card ios-list">
-        ${tasks.length ? tasks.map((t) => `
-          <div class="task-row ${t.done ? 'is-done' : ''}">
-            <button class="task-check-btn" data-action="toggle-task" data-id="${t.id}" aria-label="${t.done ? '取消完成' : '标记完成'}">
-              <svg class="task-check-svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M4.5 10.5l3.6 3.6 7.4-7.8"/>
-              </svg>
-            </button>
-            <button class="task-main" data-action="toggle-task" data-id="${t.id}">
-              <div class="task-title">${esc(t.title)}</div>
-              <div class="task-meta">
-                <span class="meta-tag">${esc(t.subject)}</span>
-                <span class="tabular">${t.durationMin} 分钟</span>
-                ${t.repeatDaily ? '<span>· 每日重复</span>' : ''}
+      ${groupedEntries.length ? `
+        <div class="category-groups-stack">
+          ${groupedEntries.map((grp) => `
+            <section class="card category-block">
+              <div class="category-block-head">
+                <div class="category-head-left">
+                  <span class="category-color-dot" style="background:${grp.color}"></span>
+                  <h3 class="category-big-title">${esc(grp.name)}</h3>
+                </div>
+                <div class="category-head-right">
+                  <span class="category-count">${grp.done} / ${grp.items.length}</span>
+                  <button class="category-quick-add" data-action="open-add-task-in-cat" data-category="${esc(grp.name)}" title="在「${esc(grp.name)}」下添加任务">+</button>
+                </div>
               </div>
-            </button>
-            <button class="task-delete-btn" data-action="delete-task" data-id="${t.id}" aria-label="删除任务" title="删除">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                <path d="M18 6L6 18M6 6l12 12"/>
-              </svg>
-            </button>
+
+              <div class="ios-list">
+                ${grp.items.map((t) => {
+                  const done = isTaskDoneOnDate(t, sel);
+                  return `
+                    <div class="task-row ${done ? 'is-done' : ''}">
+                      <button class="task-check-btn" data-action="toggle-task" data-id="${t.id}" aria-label="${done ? '取消完成' : '标记完成'}">
+                        <svg class="task-check-svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M4.5 10.5l3.6 3.6 7.4-7.8"/>
+                        </svg>
+                      </button>
+                      <button class="task-main" data-action="toggle-task" data-id="${t.id}">
+                        <div class="task-title">${esc(t.title)}</div>
+                        <div class="task-meta">
+                          <span class="tabular">${t.durationMin} 分钟</span>
+                          ${t.repeatDaily ? '<span>· 每日重复</span>' : ''}
+                        </div>
+                      </button>
+                      <button class="task-delete-btn" data-action="delete-task" data-id="${t.id}" aria-label="删除任务" title="删除">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                          <path d="M18 6L6 18M6 6l12 12"/>
+                        </svg>
+                      </button>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </section>
+          `).join('')}
+        </div>
+      ` : `
+        <section class="card empty-box">
+          <div style="font-size:15px;font-weight:600;color:var(--text-primary);">${getRelativeDayTitle(sel)}暂无安排</div>
+          <p style="font-size:12px;margin:6px 0 14px;">你可以先自定义任务大标题（如专业课、数学、英语），再添加当日或每日重复任务。</p>
+          <div style="display:flex;justify-content:center;gap:8px;">
+            <button class="btn-secondary btn-sm" data-action="open-manage-categories">自定义大标题</button>
+            <button class="btn-primary btn-sm" data-action="open-add-task">+ 添加任务</button>
           </div>
-        `).join('') : `
-          <div class="empty-box">
-            <div style="font-size:15px;font-weight:600;color:var(--text-primary);">今天还没有安排学习任务</div>
-            <p style="font-size:12px;margin:6px 0 14px;">点击下方按钮或右下角 + 号，创建你的第一项今日学习计划。</p>
-            <button class="btn-primary btn-sm" data-action="open-add-task">+ 制定第一项任务</button>
-          </div>
-        `}
-      </section>
+        </section>
+      `}
     `;
   }
 
@@ -1049,7 +1360,7 @@ Script.complete();`;
               </article>
             `;
           }).join('') : `
-            <div class="card empty-box">还没有打卡记录，去「今日」完成一项任务后会实时出现在这里。</div>
+            <div class="card empty-box">还没有打卡记录，完成今日任务后会实时出现在这里。</div>
           `}
         </section>
       ` : `
@@ -1204,10 +1515,121 @@ Script.complete();`;
   }
 
   // =========================================================================
-  // Modals / Bottom Sheets
+  // Modals / Bottom Sheets (Including Custom Big-Title Management!)
   // =========================================================================
 
-  function openAddTaskSheet() {
+  function openManageCategoriesSheet() {
+    if (!state.data || !state.data.user) return;
+    const cats = state.data.categories || [];
+    let pickedColor = SYSTEM_COLORS[cats.length % SYSTEM_COLORS.length];
+
+    openSheet(`
+      <div class="sheet-header">
+        <h2 class="sheet-title">自定义任务大标题</h2>
+        <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
+      </div>
+      <p style="font-size:12px;color:var(--text-secondary);margin:0 0 14px;line-height:1.5;">
+        自由命名你的学习模块大标题（如：专业课、数据结构、民法总论、雅思精听），任务将自动归类到对应大标题下。
+      </p>
+
+      <form id="form-new-category" style="margin-bottom:16px;">
+        <div class="field">
+          <label class="field-label" for="input-new-cat-name">新建大标题名称</label>
+          <input id="input-new-cat-name" class="input" type="text" required maxlength="18" placeholder="例如：专业课 · 计算机组成原理" autofocus />
+        </div>
+        <div class="field">
+          <label class="field-label">标记颜色</label>
+          <div class="color-swatch-row" id="cat-color-swatches">
+            ${SYSTEM_COLORS.map((c) => `
+              <button type="button" class="color-swatch ${c === pickedColor ? 'is-selected' : ''}" data-swatch="${c}" style="background:${c}" aria-label="选择颜色"></button>
+            `).join('')}
+          </div>
+        </div>
+        <button type="submit" class="btn-primary btn-block">+ 添加自定义大标题</button>
+      </form>
+
+      ${cats.length ? `
+        <div style="padding-top:14px;border-top:1px solid var(--border-separator);">
+          <div class="field-label" style="margin-bottom:8px;">已有大标题（可直接修改名称后点保存）</div>
+          ${cats.map((c) => `
+            <div class="cat-manage-row" data-cat-row="${c.id}">
+              <span class="category-color-dot" style="background:${c.color}"></span>
+              <input class="cat-manage-input" type="text" maxlength="18" value="${esc(c.name)}" data-cat-input="${c.id}" />
+              <button type="button" class="btn-secondary btn-sm" data-save-cat="${c.id}">保存</button>
+              <button type="button" class="task-delete-btn" data-del-cat="${c.id}" aria-label="删除大标题">×</button>
+            </div>
+          `).join('')}
+        </div>
+      ` : `
+        <div class="empty-box" style="padding:16px 8px;font-size:12px;">
+          还没有自定义大标题，在上方输入名称即可创建。
+        </div>
+      `}
+    `);
+
+    sheetContent.querySelectorAll('[data-swatch]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        pickedColor = btn.dataset.swatch;
+        sheetContent.querySelectorAll('[data-swatch]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+      });
+    });
+
+    document.getElementById('form-new-category').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('input-new-cat-name').value.trim();
+      if (!name) return;
+      try {
+        await api('/api/categories', {
+          method: 'POST',
+          body: JSON.stringify({ userId: state.userId, name, color: pickedColor })
+        });
+        await loadBootstrap(true);
+        openManageCategoriesSheet();
+        showHud(`已创建大标题「${name}」`);
+      } catch (err) {
+        showHud(err.message, 'var(--red)');
+      }
+    });
+
+    sheetContent.querySelectorAll('[data-save-cat]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.saveCat;
+        const input = sheetContent.querySelector(`[data-cat-input="${id}"]`);
+        const nextName = input ? input.value.trim() : '';
+        if (!nextName) return;
+        try {
+          await api(`/api/categories/${id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ name: nextName })
+          });
+          await loadBootstrap(true);
+          openManageCategoriesSheet();
+          showHud(`已重命名为「${nextName}」`);
+        } catch (err) {
+          showHud(err.message, 'var(--red)');
+        }
+      });
+    });
+
+    sheetContent.querySelectorAll('[data-del-cat]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.delCat;
+        try {
+          await api(`/api/categories/${id}`, { method: 'DELETE' });
+          await loadBootstrap(true);
+          openManageCategoriesSheet();
+          showHud('已移除大标题');
+        } catch (err) {
+          showHud(err.message, 'var(--red)');
+        }
+      });
+    });
+  }
+
+  function openAddTaskSheet(prefillCategory = '') {
+    const cats = (state.data && state.data.categories) || [];
+    const initialCat = prefillCategory || (cats[0] ? cats[0].name : '');
+
     openSheet(`
       <div class="sheet-header">
         <h2 class="sheet-title">新建学习任务</h2>
@@ -1215,42 +1637,61 @@ Script.complete();`;
       </div>
       <form id="form-add-task">
         <div class="field">
-          <label class="field-label" for="input-task-title">任务内容</label>
-          <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="例如：背诵 50 个核心词汇" autofocus />
+          <label class="field-label" for="input-task-category">任务大标题（可自由命名或点选已有）</label>
+          <input id="input-task-category" class="input" type="text" required maxlength="18" placeholder="例如：专业课、高数、英语精读" value="${esc(initialCat)}" />
+          ${cats.length ? `
+            <div class="chip-row" id="task-cat-chips" style="margin-top:8px;">
+              ${cats.map((c) => `
+                <button type="button" class="choice-chip ${c.name === initialCat ? 'is-selected' : ''}" data-pick-cat="${esc(c.name)}">
+                  ${esc(c.name)}
+                </button>
+              `).join('')}
+            </div>
+          ` : ''}
         </div>
+
         <div class="field">
-          <label class="field-label">学科 / 分类</label>
-          <div class="chip-row" id="task-subject-chips">
-            ${SUBJECT_PRESETS.map((s, i) => `
-              <button type="button" class="choice-chip ${i === 0 ? 'is-selected' : ''}" data-subject="${s}">${s}</button>
-            `).join('')}
+          <label class="field-label" for="input-task-title">具体任务内容</label>
+          <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="例如：刷完第三章真题并整理错题" autofocus />
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <div class="field">
+            <label class="field-label" for="input-task-date">安排日期</label>
+            <input id="input-task-date" class="input tabular" type="date" required value="${state.selectedDate}" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="input-task-duration">预计时长（分）</label>
+            <input id="input-task-duration" class="input tabular" type="number" min="5" max="360" value="45" />
           </div>
         </div>
-        <div class="field">
-          <label class="field-label" for="input-task-duration">预计专注时长（分钟）</label>
-          <input id="input-task-duration" class="input tabular" type="number" min="5" max="360" value="45" />
-        </div>
+
         <div class="field">
           <div class="switch-row">
             <div>
               <div style="font-size:14px;font-weight:600;">每日自动重复</div>
-              <div style="font-size:12px;color:var(--text-secondary);">次日自动重置为待办，适合长期习惯</div>
+              <div style="font-size:12px;color:var(--text-secondary);">从该日期起每天自动出现在时间轴中</div>
             </div>
-            <button type="button" id="switch-repeat" class="ios-switch is-on" role="switch" aria-checked="true"></button>
+            <button type="button" id="switch-repeat" class="ios-switch" role="switch" aria-checked="false"></button>
           </div>
         </div>
-        <button type="submit" class="btn-primary btn-block" style="margin-top:8px;">添加到今日清单</button>
+        <button type="submit" class="btn-primary btn-block" style="margin-top:8px;">添加到任务序列</button>
       </form>
     `);
 
-    let selectedSubject = SUBJECT_PRESETS[0];
-    let repeatDaily = true;
+    let repeatDaily = false;
+    const catInput = document.getElementById('input-task-category');
 
-    sheetContent.querySelectorAll('#task-subject-chips .choice-chip').forEach((btn) => {
+    sheetContent.querySelectorAll('[data-pick-cat]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        selectedSubject = btn.dataset.subject;
-        sheetContent.querySelectorAll('#task-subject-chips .choice-chip').forEach((b) => b.classList.toggle('is-selected', b === btn));
+        catInput.value = btn.dataset.pickCat;
+        sheetContent.querySelectorAll('[data-pick-cat]').forEach((b) => b.classList.toggle('is-selected', b === btn));
       });
+    });
+
+    catInput.addEventListener('input', () => {
+      const val = catInput.value.trim();
+      sheetContent.querySelectorAll('[data-pick-cat]').forEach((b) => b.classList.toggle('is-selected', b.dataset.pickCat === val));
     });
 
     const sw = document.getElementById('switch-repeat');
@@ -1262,17 +1703,21 @@ Script.complete();`;
 
     document.getElementById('form-add-task').addEventListener('submit', async (e) => {
       e.preventDefault();
+      const category = catInput.value.trim() || '未分组';
       const title = document.getElementById('input-task-title').value.trim();
+      const date = document.getElementById('input-task-date').value || state.selectedDate;
       const durationMin = Number(document.getElementById('input-task-duration').value) || 30;
       if (!title) return;
       closeSheet();
       try {
         await api('/api/tasks', {
           method: 'POST',
-          body: JSON.stringify({ userId: state.userId, title, subject: selectedSubject, durationMin, repeatDaily })
+          body: JSON.stringify({ userId: state.userId, category, title, date, durationMin, repeatDaily })
         });
+        state.selectedDate = date;
+        state.viewMonth = currentMonthKey(date);
         await loadBootstrap(true);
-        showHud('已添加到今日清单');
+        showHud(`已添加到「${category}」`);
       } catch (err) {
         showHud(err.message, 'var(--red)');
       }
@@ -1494,6 +1939,9 @@ Script.complete();`;
         state.userId = '';
         state.activeGroupId = null;
         state.activeTab = 'today';
+        state.selectedDate = todayKey();
+        state.viewMonth = currentMonthKey();
+        state.showMonthCalendar = false;
         syncTabButtons();
         localStorage.removeItem('shixu_raw_user_id');
         await loadBootstrap(false);
@@ -1600,7 +2048,7 @@ Script.complete();`;
   }
 
   // =========================================================================
-  // 1170x2532 iPhone Lock Screen PNG Generator (Real-time user data)
+  // 1170x2532 iPhone Lock Screen PNG Generator
   // =========================================================================
 
   function renderLockscreenCanvasDataUrl() {
@@ -1610,10 +2058,10 @@ Script.complete();`;
     const W = 1170;
     const H = 2532;
     const isDark = state.theme === 'dark';
-    const pinned = state.data.exams[0] || { name: '尚未设定目标倒计时', tag: '时序', daysLeft: 0, progress: 0, targetDate: todayKey() };
-    const tasks = state.data.tasks.slice(0, 3);
-    const done = state.data.tasks.filter((t) => t.done).length;
-    const total = state.data.tasks.length;
+    const today = todayKey();
+    const pinned = state.data.exams[0] || { name: '尚未设定目标倒计时', tag: '时序', daysLeft: 0, progress: 0, targetDate: today };
+    const todayStats = getDayStats(state.data.tasks, today);
+    const tasks = todayStats.list.slice(0, 3);
     const grp = state.data.groups[0];
 
     const bgGrad = ctx.createLinearGradient(0, 0, W, H);
@@ -1684,9 +2132,10 @@ Script.complete();`;
     if (tasks.length) {
       tasks.forEach((t, idx) => {
         const y = 1500 + idx * 104;
+        const done = isTaskDoneOnDate(t, today);
         ctx.beginPath();
         ctx.arc(176, y - 12, 16, 0, Math.PI * 2);
-        if (t.done) {
+        if (done) {
           ctx.fillStyle = accent;
           ctx.fill();
         } else {
@@ -1694,9 +2143,10 @@ Script.complete();`;
           ctx.lineWidth = 3.5;
           ctx.stroke();
         }
-        ctx.fillStyle = t.done ? muted : fg;
+        ctx.fillStyle = done ? muted : fg;
         ctx.font = `500 35px ${fontFamily}`;
-        const label = t.title.length > 18 ? `${t.title.slice(0, 18)}…` : t.title;
+        const fullLabel = `${t.category} · ${t.title}`;
+        const label = fullLabel.length > 18 ? `${fullLabel.slice(0, 18)}…` : fullLabel;
         ctx.fillText(label, 218, y);
       });
     } else {
@@ -1715,7 +2165,7 @@ Script.complete();`;
     ctx.fillStyle = accent;
     ctx.font = `600 31px ${fontFamily}`;
     ctx.textAlign = 'right';
-    ctx.fillText(`今日 ${done}/${total}`, 1014, 1878);
+    ctx.fillText(`今日 ${todayStats.done}/${todayStats.total}`, 1014, 1878);
     ctx.textAlign = 'left';
 
     return canvas.toDataURL('image/png');
@@ -1785,10 +2235,35 @@ Script.complete();`;
 
     if (action === 'close-sheet') return closeSheet();
     if (action === 'open-add-task') return openAddTaskSheet();
+    if (action === 'open-add-task-in-cat') return openAddTaskSheet(btn.dataset.category || '');
+    if (action === 'open-manage-categories') return openManageCategoriesSheet();
     if (action === 'open-add-exam') return openAddExamSheet();
     if (action === 'open-create-group') return openCreateGroupSheet();
     if (action === 'open-join-group') return openJoinGroupSheet();
     if (action === 'open-focus') return openFocusSheet();
+
+    if (action === 'pick-date') {
+      const ds = btn.dataset.date;
+      if (ds) {
+        state.selectedDate = ds;
+        state.viewMonth = currentMonthKey(ds);
+        renderView(false);
+      }
+      return;
+    }
+
+    if (action === 'toggle-month-cal') {
+      state.showMonthCalendar = !state.showMonthCalendar;
+      if (state.showMonthCalendar) state.viewMonth = currentMonthKey(state.selectedDate);
+      renderView(false);
+      return;
+    }
+
+    if (action === 'shift-month') {
+      state.viewMonth = shiftMonthKey(state.viewMonth, Number(btn.dataset.delta) || 0);
+      renderView(false);
+      return;
+    }
 
     if (action === 'goto-groups') {
       state.activeTab = 'groups';
@@ -1816,15 +2291,19 @@ Script.complete();`;
       const id = btn.dataset.id;
       const task = state.data.tasks.find((t) => t.id === id);
       if (!task) return;
-      task.done = !task.done;
+      const dateStr = state.selectedDate;
+      const nextDone = !isTaskDoneOnDate(task, dateStr);
+      if (!Array.isArray(task.completedDates)) task.completedDates = [];
+      if (nextDone) task.completedDates.push(dateStr);
+      else task.completedDates = task.completedDates.filter((d) => d !== dateStr);
       renderView(false);
       try {
         await api(`/api/tasks/${id}`, {
           method: 'PATCH',
-          body: JSON.stringify({ done: task.done })
+          body: JSON.stringify({ done: nextDone, date: dateStr })
         });
         await loadBootstrap(true);
-        if (task.done) showHud('已完成打卡');
+        if (nextDone) showHud(dateStr === todayKey() ? '今日打卡完成' : `已标记 ${formatDateCN(dateStr)} 完成`);
       } catch (err) {
         showHud(err.message, 'var(--red)');
         await loadBootstrap(true);
@@ -1982,9 +2461,7 @@ Script.complete();`;
     if (/MicroMessenger/i.test(navigator.userAgent)) {
       const overlay = document.getElementById('wechat-guide');
       overlay.classList.remove('hidden');
-      document.getElementById('wechat-dismiss').addEventListener('click', () => {
-        overlay.classList.add('hidden');
-      });
+      document.getElementById('wechat-dismiss').addEventListener('click', () => overlay.classList.add('hidden'));
     }
   }
 

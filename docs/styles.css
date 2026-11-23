@@ -1563,3 +1563,433 @@ html[data-theme="dark"] .hero-countdown {
   font-size: 13px;
   font-weight: 600;
 }
+
+/* ==========================================================================
+   Task Sequence Timeline (Yesterday / Today / Tomorrow & Full Month Progress)
+   ========================================================================== */
+
+.timeline-card {
+  margin-top: 14px;
+  padding: 14px 14px 12px;
+}
+
+.timeline-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.segmented-control {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--bg-surface-secondary);
+  gap: 2px;
+}
+
+.seg-btn {
+  padding: 5px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  transition: background 220ms var(--ease-apple),
+              color 220ms var(--ease-apple),
+              box-shadow 220ms var(--ease-apple),
+              transform 160ms var(--ease-apple);
+}
+
+.seg-btn.is-active {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.seg-btn:active {
+  transform: scale(0.95);
+}
+
+.month-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  transition: transform var(--dur-fast) var(--ease-apple), background var(--dur-fast) ease;
+}
+
+.month-toggle-btn:active {
+  transform: scale(0.94);
+}
+
+.month-toggle-btn svg {
+  transition: transform 280ms var(--ease-apple);
+}
+
+.month-toggle-btn.is-open svg {
+  transform: rotate(180deg);
+}
+
+/* 7-Day Date Rail */
+.date-rail {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.date-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 7px 2px 6px;
+  border-radius: 13px;
+  transition: background 200ms var(--ease-apple), transform 180ms var(--ease-spring);
+}
+
+.date-chip:active {
+  transform: scale(0.92);
+}
+
+.date-chip.is-selected {
+  background: var(--accent);
+  color: #FFFFFF;
+}
+
+.date-chip-wk {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+}
+
+.date-chip.is-selected .date-chip-wk {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.date-chip-num {
+  margin-top: 3px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.date-chip.is-today:not(.is-selected) .date-chip-num {
+  color: var(--accent);
+}
+
+.date-chip-dot {
+  margin-top: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.date-chip-dot.has-todo {
+  background: var(--text-tertiary);
+  opacity: 0.45;
+}
+
+.date-chip-dot.has-partial {
+  background: var(--accent);
+}
+
+.date-chip-dot.has-all {
+  background: var(--green);
+}
+
+.date-chip.is-selected .date-chip-dot.has-todo,
+.date-chip.is-selected .date-chip-dot.has-partial,
+.date-chip.is-selected .date-chip-dot.has-all {
+  background: #FFFFFF;
+  opacity: 0.95;
+}
+
+/* Expandable Monthly Progress Calendar (Apple Fitness Inspired) */
+.month-panel {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-separator);
+  animation: appleViewEnter 280ms var(--ease-apple) both;
+}
+
+.month-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.month-label {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+.month-nav-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.month-arrow-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--bg-surface-secondary);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  transition: transform var(--dur-fast) ease;
+}
+
+.month-arrow-btn:active {
+  transform: scale(0.9);
+}
+
+.month-kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.month-kpi {
+  padding: 9px 8px;
+  border-radius: 12px;
+  background: var(--bg-surface-secondary);
+  text-align: center;
+}
+
+.month-kpi-val {
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.month-kpi-lbl {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  text-align: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  row-gap: 6px;
+  column-gap: 2px;
+}
+
+.cal-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 0;
+  border-radius: 12px;
+  transition: background 180ms ease, transform 180ms var(--ease-spring);
+}
+
+.cal-cell:active {
+  transform: scale(0.9);
+}
+
+.cal-cell.is-selected {
+  background: var(--accent-soft);
+}
+
+.cal-day-ring {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cal-day-ring svg {
+  transform: rotate(-90deg);
+}
+
+.cal-day-num {
+  position: absolute;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.cal-cell.is-today .cal-day-num {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.cal-cell.is-selected .cal-day-num {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.cal-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.cal-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legend-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+/* ==========================================================================
+   Custom Task Category Big-Title Sections (Apple Reminders Sections Style)
+   ========================================================================== */
+
+.category-groups-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.category-block {
+  overflow: hidden;
+}
+
+.category-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 13px 16px 11px;
+  border-bottom: 1px solid var(--border-separator);
+}
+
+.category-head-left {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.category-color-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.category-big-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.category-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.category-quick-add {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg-surface-secondary);
+  color: var(--accent);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform var(--dur-fast) var(--ease-spring), background var(--dur-fast) ease;
+}
+
+.category-quick-add:active {
+  transform: scale(0.86);
+  background: var(--accent-soft);
+}
+
+/* Color Swatch Picker inside Category Sheet */
+.color-swatch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.color-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  transition: transform var(--dur-fast) var(--ease-spring);
+}
+
+.color-swatch.is-selected {
+  transform: scale(1.16);
+  box-shadow: 0 0 0 2px var(--bg-sheet), 0 0 0 4px var(--text-primary);
+}
+
+.cat-manage-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 13px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  margin-bottom: 8px;
+}
+
+.cat-manage-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 600;
+  outline: none;
+  padding: 2px 4px;
+}

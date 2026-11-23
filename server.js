@@ -22,7 +22,7 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon'
 };
 
-const AVATAR_COLORS = ['#0071E3', '#34C759', '#FF9500', '#FF3B30', '#0A84FF', '#30B0C7'];
+const SYSTEM_COLORS = ['#0071E3', '#34C759', '#FF9500', '#FF3B30', '#30B0C7', '#5856D6'];
 
 function todayKey() {
   const now = new Date();
@@ -55,8 +55,7 @@ function calcProgress(startDate, targetDate) {
   const end = new Date(`${targetDate}T00:00:00`).getTime();
   const now = new Date().setHours(0, 0, 0, 0);
   if (!start || !end || end <= start) return 100;
-  const ratio = (now - start) / (end - start);
-  return Math.min(100, Math.max(4, Math.round(ratio * 100)));
+  return Math.min(100, Math.max(4, Math.round(((now - start) / (end - start)) * 100)));
 }
 
 function genId(prefix) {
@@ -79,11 +78,21 @@ function escapeXml(str) {
     .replace(/'/g, '&apos;');
 }
 
-// Pure clean raw initial store — zero pre-filled fake demo data
+function isTaskOnDate(task, dateStr) {
+  if (!task.repeatDaily) return task.date === dateStr;
+  return dateStr >= task.date;
+}
+
+function isTaskDoneOnDate(task, dateStr) {
+  return Array.isArray(task.completedDates) ? task.completedDates.includes(dateStr) : Boolean(task.done && task.date === dateStr);
+}
+
+// Pure raw clean initial store — zero pre-filled demo data
 function createEmptyStore() {
   return {
     lastRolloverDate: todayKey(),
     users: [],
+    categories: [],
     exams: [],
     tasks: [],
     groups: [],
@@ -102,6 +111,7 @@ function ensureStore() {
   }
   try {
     store = JSON.parse(fs.readFileSync(STORE_PATH, 'utf-8'));
+    if (!Array.isArray(store.categories)) store.categories = [];
   } catch {
     store = createEmptyStore();
     saveStore();
@@ -118,14 +128,6 @@ function saveStore() {
 function rolloverIfNeeded() {
   const today = todayKey();
   if (store.lastRolloverDate === today) return;
-  store.tasks = store.tasks.filter((t) => t.repeatDaily || t.date === today);
-  for (const t of store.tasks) {
-    if (t.repeatDaily && t.date !== today) {
-      t.done = false;
-      t.date = today;
-      t.completedAt = null;
-    }
-  }
   for (const u of store.users) u.focusMinutesToday = 0;
   store.lastRolloverDate = today;
   saveStore();
@@ -146,21 +148,38 @@ setInterval(() => {
   }
 }, 25000);
 
-function getUserTaskSummary(userId) {
-  const today = todayKey();
-  const list = store.tasks.filter((t) => t.userId === userId && t.date === today);
-  const done = list.filter((t) => t.done).length;
+function getUserTaskSummary(userId, dateStr = todayKey()) {
+  const list = store.tasks.filter((t) => t.userId === userId && isTaskOnDate(t, dateStr));
+  const done = list.filter((t) => isTaskDoneOnDate(t, dateStr)).length;
   const total = list.length;
   const pct = total === 0 ? 0 : Math.round((done / total) * 100);
   return { done, total, pct, list };
 }
 
+function ensureCategoryForUser(userId, name, color) {
+  const cleanName = String(name || '').trim().slice(0, 18);
+  if (!cleanName) return null;
+  let existing = store.categories.find((c) => c.userId === userId && c.name === cleanName);
+  if (!existing) {
+    const userCats = store.categories.filter((c) => c.userId === userId);
+    existing = {
+      id: genId('cat'),
+      userId,
+      name: cleanName,
+      color: color || SYSTEM_COLORS[userCats.length % SYSTEM_COLORS.length]
+    };
+    store.categories.push(existing);
+  }
+  return existing;
+}
+
 function buildGroupDTO(group) {
+  const today = todayKey();
   const members = group.memberIds
     .map((uid) => store.users.find((u) => u.id === uid))
     .filter(Boolean)
     .map((u) => {
-      const s = getUserTaskSummary(u.id);
+      const s = getUserTaskSummary(u.id, today);
       return {
         id: u.id,
         name: u.name,
@@ -204,12 +223,18 @@ function buildBootstrap(userId) {
   const today = todayKey();
 
   if (!user) {
-    return { today, user: null, users: [], tasks: [], exams: [], groups: [] };
+    return { today, user: null, users: [], categories: [], tasks: [], exams: [], groups: [] };
   }
 
+  const categories = store.categories.filter((c) => c.userId === user.id);
   const tasks = store.tasks
-    .filter((t) => t.userId === user.id && t.date === today)
-    .sort((a, b) => Number(a.done) - Number(b.done));
+    .filter((t) => t.userId === user.id)
+    .map((t) => ({
+      ...t,
+      category: t.category || t.subject || '未分组',
+      completedDates: Array.isArray(t.completedDates) ? t.completedDates : (t.done ? [t.date] : []),
+      done: isTaskDoneOnDate(t, today)
+    }));
 
   const exams = store.exams
     .filter((e) => e.userId === user.id)
@@ -224,6 +249,7 @@ function buildBootstrap(userId) {
     today,
     user,
     users: store.users.map((u) => ({ id: u.id, name: u.name, avatar: u.avatar, color: u.color, streak: u.streak })),
+    categories,
     tasks,
     exams,
     groups
@@ -232,9 +258,11 @@ function buildBootstrap(userId) {
 
 function buildWidgetPayload(userId) {
   const data = buildBootstrap(userId);
-  const pinnedExam = data.exams[0] || { name: '尚未设定目标', daysLeft: 0, progress: 0, targetDate: todayKey(), tag: '倒计时' };
-  const done = data.tasks.filter((t) => t.done).length;
-  const total = data.tasks.length;
+  const today = data.today;
+  const todayTasks = data.tasks.filter((t) => isTaskOnDate(t, today));
+  const pinnedExam = data.exams[0] || { name: '尚未设定目标', daysLeft: 0, progress: 0, targetDate: today, tag: '倒计时' };
+  const done = todayTasks.filter((t) => isTaskDoneOnDate(t, today)).length;
+  const total = todayTasks.length;
   const pct = total ? Math.round((done / total) * 100) : 0;
   const primaryGroup = data.groups[0] || null;
   return {
@@ -252,7 +280,7 @@ function buildWidgetPayload(userId) {
       total,
       pct,
       focusMinutes: data.user ? (data.user.focusMinutesToday || 0) : 0,
-      tasks: data.tasks.slice(0, 4).map((t) => ({ title: t.title, subject: t.subject, done: t.done }))
+      tasks: todayTasks.slice(0, 4).map((t) => ({ title: t.title, category: t.category, done: isTaskDoneOnDate(t, today) }))
     },
     group: primaryGroup
       ? {
@@ -290,9 +318,7 @@ function buildWallpaperSVG(userId, theme) {
     `;
   }).join('');
 
-  const groupLine = p.group
-    ? `${escapeXml(p.group.name)} · 今日达成 ${p.group.teamPct}%`
-    : '时序 StudyOS';
+  const groupLine = p.group ? `${escapeXml(p.group.name)} · 今日达成 ${p.group.teamPct}%` : '时序 StudyOS';
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1170" height="2532" viewBox="0 0 1170 2532">
@@ -485,7 +511,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Create User (completely clean — zero fake tasks/exams pre-filled)
+    // Users
     if (method === 'POST' && pathname === '/api/users') {
       const body = await parseBody(req);
       const name = String(body.name || '').trim().slice(0, 16);
@@ -495,7 +521,7 @@ const server = http.createServer(async (req, res) => {
         id: genId('u'),
         name,
         avatar: name.slice(0, 1),
-        color: body.color || AVATAR_COLORS[store.users.length % AVATAR_COLORS.length],
+        color: body.color || SYSTEM_COLORS[store.users.length % SYSTEM_COLORS.length],
         streak: 0,
         focusMinutesToday: 0,
         createdAt: Date.now()
@@ -507,15 +533,7 @@ const server = http.createServer(async (req, res) => {
         const grp = store.groups.find((g) => g.inviteCode === code);
         if (grp && !grp.memberIds.includes(user.id)) {
           grp.memberIds.push(user.id);
-          store.feeds.push({
-            id: genId('f'),
-            groupId: grp.id,
-            userId: user.id,
-            type: 'join',
-            text: `加入了学习小组`,
-            createdAt: Date.now(),
-            likedBy: []
-          });
+          store.feeds.push({ id: genId('f'), groupId: grp.id, userId: user.id, type: 'join', text: '加入了学习小组', createdAt: Date.now(), likedBy: [] });
         }
       }
 
@@ -524,22 +542,79 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 201, { user, bootstrap: buildBootstrap(user.id) });
     }
 
+    // Custom Task Categories (大标题管理)
+    if (method === 'POST' && pathname === '/api/categories') {
+      const body = await parseBody(req);
+      const userId = body.userId;
+      const name = String(body.name || '').trim().slice(0, 18);
+      if (!userId || !name) return sendJSON(res, 400, { error: '请输入任务大标题名称' });
+      const category = ensureCategoryForUser(userId, name, body.color);
+      saveStore();
+      broadcast('sync', { reason: 'category_created', userId });
+      return sendJSON(res, 201, { category });
+    }
+
+    const catMatch = pathname.match(/^\/api\/categories\/([^/]+)$/);
+    if (catMatch && method === 'PATCH') {
+      const body = await parseBody(req);
+      const cat = store.categories.find((c) => c.id === catMatch[1]);
+      if (!cat) return sendJSON(res, 404, { error: '大标题不存在' });
+      const oldName = cat.name;
+      if (typeof body.name === 'string' && body.name.trim()) {
+        const nextName = body.name.trim().slice(0, 18);
+        cat.name = nextName;
+        for (const t of store.tasks) {
+          if (t.userId === cat.userId && (t.category === oldName || t.subject === oldName)) {
+            t.category = nextName;
+            t.subject = nextName;
+          }
+        }
+      }
+      if (typeof body.color === 'string' && body.color) cat.color = body.color;
+      saveStore();
+      broadcast('sync', { reason: 'category_updated', userId: cat.userId });
+      return sendJSON(res, 200, { category: cat });
+    }
+
+    if (catMatch && method === 'DELETE') {
+      const idx = store.categories.findIndex((c) => c.id === catMatch[1]);
+      if (idx === -1) return sendJSON(res, 404, { error: '大标题不存在' });
+      const [removed] = store.categories.splice(idx, 1);
+      for (const t of store.tasks) {
+        if (t.userId === removed.userId && t.category === removed.name) {
+          t.category = '未分组';
+          t.subject = '未分组';
+        }
+      }
+      saveStore();
+      broadcast('sync', { reason: 'category_deleted', userId: removed.userId });
+      return sendJSON(res, 200, { ok: true });
+    }
+
+    // Create Task (supports custom category big title & specific timeline date)
     if (method === 'POST' && pathname === '/api/tasks') {
       const body = await parseBody(req);
       const userId = body.userId;
       const title = String(body.title || '').trim().slice(0, 60);
       if (!userId || !title) return sendJSON(res, 400, { error: '请输入任务名称' });
 
+      const categoryName = String(body.category || body.subject || '未分组').trim().slice(0, 18) || '未分组';
+      if (categoryName !== '未分组') {
+        ensureCategoryForUser(userId, categoryName, body.categoryColor);
+      }
+
+      const taskDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : todayKey();
       const task = {
         id: genId('t'),
         userId,
         title,
-        subject: String(body.subject || '日常').trim().slice(0, 12),
+        category: categoryName,
+        subject: categoryName,
         durationMin: Math.min(360, Math.max(5, Number(body.durationMin) || 30)),
         repeatDaily: Boolean(body.repeatDaily),
-        done: false,
-        date: todayKey(),
-        completedAt: null
+        date: taskDate,
+        completedDates: [],
+        createdAt: Date.now()
       };
       store.tasks.unshift(task);
       saveStore();
@@ -547,26 +622,30 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 201, { task });
     }
 
+    // Toggle Task for a specific timeline date
     const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)$/);
     if (taskMatch && method === 'PATCH') {
       const body = await parseBody(req);
       const task = store.tasks.find((t) => t.id === taskMatch[1]);
       if (!task) return sendJSON(res, 404, { error: '任务不存在' });
 
-      const prevDone = task.done;
+      const targetDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : todayKey();
+      if (!Array.isArray(task.completedDates)) task.completedDates = [];
+      const prevDone = task.completedDates.includes(targetDate);
+
       if (typeof body.done === 'boolean') {
-        task.done = body.done;
-        task.completedAt = body.done ? Date.now() : null;
+        if (body.done && !prevDone) task.completedDates.push(targetDate);
+        if (!body.done && prevDone) task.completedDates = task.completedDates.filter((d) => d !== targetDate);
       }
 
-      if (!prevDone && task.done) {
+      if (!prevDone && body.done === true && targetDate === todayKey()) {
         const user = store.users.find((u) => u.id === task.userId);
         if (user && user.streak === 0) user.streak = 1;
-        const summary = getUserTaskSummary(task.userId);
+        const summary = getUserTaskSummary(task.userId, targetDate);
         for (const g of store.groups.filter((gr) => gr.memberIds.includes(task.userId))) {
           const text = summary.done === summary.total && summary.total > 0
             ? `完成了今日全部 ${summary.total} 项学习任务，达成率 100%`
-            : `打卡「${task.title}」· ${task.durationMin} 分钟`;
+            : `打卡「${task.category} · ${task.title}」`;
           store.feeds.push({ id: genId('f'), groupId: g.id, userId: task.userId, type: 'checkin', text, createdAt: Date.now(), likedBy: [] });
         }
         broadcast('toast', { fromUserId: task.userId, text: `${user ? user.name : '成员'} 刚刚完成打卡：${task.title.slice(0, 14)}` });
@@ -586,6 +665,7 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { ok: true });
     }
 
+    // Exams
     if (method === 'POST' && pathname === '/api/exams') {
       const body = await parseBody(req);
       const userId = body.userId;
@@ -594,9 +674,7 @@ const server = http.createServer(async (req, res) => {
       if (!userId || !name || !targetDate) return sendJSON(res, 400, { error: '请填写目标名称和日期' });
 
       const pinned = body.pinned !== false;
-      if (pinned) {
-        for (const ex of store.exams) if (ex.userId === userId) ex.pinned = false;
-      }
+      if (pinned) for (const ex of store.exams) if (ex.userId === userId) ex.pinned = false;
 
       const exam = {
         id: genId('ex'),
@@ -641,12 +719,13 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { ok: true });
     }
 
+    // Focus
     if (method === 'POST' && pathname === '/api/focus/complete') {
       const body = await parseBody(req);
       const user = store.users.find((u) => u.id === body.userId);
       if (!user) return sendJSON(res, 404, { error: '用户不存在' });
       const minutes = Math.min(240, Math.max(1, Number(body.minutes) || 25));
-      const label = String(body.label || '深度专注自习').trim().slice(0, 30);
+      const label = String(body.label || '专注学习').trim().slice(0, 30);
       user.focusMinutesToday = (user.focusMinutesToday || 0) + minutes;
       if (user.streak === 0) user.streak = 1;
       for (const g of store.groups.filter((gr) => gr.memberIds.includes(user.id))) {
@@ -657,6 +736,7 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { focusMinutesToday: user.focusMinutesToday });
     }
 
+    // Groups
     if (method === 'POST' && pathname === '/api/groups') {
       const body = await parseBody(req);
       const ownerId = body.userId;
@@ -708,9 +788,7 @@ const server = http.createServer(async (req, res) => {
       const toUser = store.users.find((u) => u.id === body.toUserId);
       if (!fromUser || !toUser) return sendJSON(res, 404, { error: '成员不存在' });
       const kind = body.kind === 'cheer' ? 'cheer' : 'nudge';
-      const text = kind === 'cheer'
-        ? `给 ${toUser.name} 送上了鼓励`
-        : `拍了拍 ${toUser.name}：该学习打卡啦`;
+      const text = kind === 'cheer' ? `给 ${toUser.name} 送上了鼓励` : `拍了拍 ${toUser.name}：该学习打卡啦`;
       store.feeds.push({ id: genId('f'), groupId: nudgeMatch[1], userId: fromUser.id, type: kind, text, createdAt: Date.now(), likedBy: [] });
       saveStore();
       broadcast('toast', { fromUserId: fromUser.id, toUserId: toUser.id, text: `${fromUser.name} ${kind === 'cheer' ? '鼓励了' : '拍了拍'} ${toUser.name}` });
