@@ -381,6 +381,28 @@
     return '';
   }
 
+  const CHEVRON_DOWN_SVG = `
+    <svg class="category-chevron" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M4 6l4 4 4-4"/>
+    </svg>
+  `;
+
+  function loadCollapsedCategories() {
+    try {
+      const raw = safeStorageGet('shixu_collapsed_cats');
+      const parsed = raw ? JSON.parse(raw) : [];
+      return new Set(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  function saveCollapsedCategories() {
+    try {
+      safeStorageSet('shixu_collapsed_cats', JSON.stringify(Array.from(state.collapsedCategories)));
+    } catch {}
+  }
+
   const state = {
     mode: 'auto', // 'server' | 'supabase' | 'local'
     userId: '',
@@ -389,6 +411,7 @@
     theme: safeStorageGet('shixu_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
     activeTab: 'today',
     taskFilter: 'all', // 'all' | 'review' | 'todo'
+    collapsedCategories: loadCollapsedCategories(),
     selectedDate: todayKey(),
     viewMonth: currentMonthKey(),
     showMonthCalendar: false,
@@ -1595,6 +1618,7 @@
     if (isFormField(document.activeElement)) {
       document.activeElement.blur();
     }
+    document.documentElement.classList.remove('ios-input-focused');
   }
 
   function settleNativeScrollAfterKeyboard() {
@@ -2062,6 +2086,9 @@ Script.complete();`;
 
   function renderView(animate = true) {
     if (!state.data) return;
+    if (!isFormField(document.activeElement)) {
+      document.documentElement.classList.remove('ios-input-focused');
+    }
     syncHeader();
 
     const modalOpen = !modalPage.classList.contains('hidden');
@@ -2418,55 +2445,90 @@ Script.complete();`;
         </button>
       </div>
 
+      ${groupedEntries.length >= 2 ? (() => {
+        const allCollapsed = groupedEntries.every((g) => state.collapsedCategories.has(g.name));
+        return `
+          <div class="collapse-all-row">
+            <span style="font-size:12px;color:var(--text-tertiary);">共 ${groupedEntries.length} 个大标题 · 点击标题栏可收起</span>
+            <button type="button" class="collapse-all-btn" id="btn-toggle-all-cats" data-action="toggle-all-categories">
+              ${allCollapsed ? '全部展开' : '全部收起'}
+            </button>
+          </div>
+        `;
+      })() : ''}
+
       ${groupedEntries.length ? `
         <div class="category-groups-stack">
-          ${groupedEntries.map((grp) => `
-            <section class="card category-block">
-              <div class="category-block-head">
-                <div class="category-head-left">
-                  <span class="category-color-dot" style="background:${grp.color}"></span>
-                  <h3 class="category-big-title">${esc(grp.name)}</h3>
-                </div>
-                <div class="category-head-right">
-                  <span class="category-count">${grp.done} / ${grp.items.length}</span>
-                  <button type="button" class="category-quick-add" data-action="open-add-task-in-cat" data-category="${esc(grp.name)}" title="在「${esc(grp.name)}」下添加任务">+</button>
-                </div>
-              </div>
-
-              <div class="ios-list">
-                ${grp.items.map((t) => {
-                  const done = isTaskDoneOnDate(t, sel);
-                  const review = isReviewTask(t);
-                  const roundInfo = review ? getReviewRoundInfo(t, sel) : null;
-                  const masteryObj = review ? (MASTERY_LEVELS[t.mastery] || MASTERY_LEVELS.weak) : null;
-                  return `
-                    <div class="task-row ${done ? 'is-done' : ''} ${review ? 'is-review-task' : ''}" data-task-row="${t.id}">
-                      <button type="button" class="task-check-btn" data-action="toggle-task" data-id="${t.id}" aria-label="${done ? '取消完成' : '标记完成'}">
-                        <svg class="task-check-svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                          <path d="M4.5 10.5l3.6 3.6 7.4-7.8"/>
-                        </svg>
-                      </button>
-                      <button type="button" class="task-main" data-action="edit-task" data-id="${t.id}">
-                        <div class="task-title">${esc(t.title)}</div>
-                        ${review && t.mistakeNote ? `<div class="task-mistake-note">${esc(t.mistakeNote)}</div>` : ''}
-                        <div class="task-meta">
-                          ${review && roundInfo ? `<span class="review-round-tag">${esc(p.reviewRound(roundInfo.round, roundInfo.total))}</span>` : ''}
-                          <span class="tabular">${t.durationMin} 分钟</span>
-                          ${t.repeatDaily ? '<span>· 每日重复</span>' : ''}
+          ${groupedEntries.map((grp) => {
+            const isCollapsed = state.collapsedCategories.has(grp.name);
+            const catPct = grp.items.length ? Math.round((grp.done / grp.items.length) * 100) : 0;
+            const catRevCount = grp.items.filter((x) => isReviewTask(x)).length;
+            const statusText = catPct === 100 && grp.items.length > 0
+              ? '全部完成'
+              : (catRevCount > 0 ? `含 ${catRevCount} 错题` : `${catPct}% 进度`);
+            return `
+              <section class="card category-block ${isCollapsed ? 'is-collapsed' : ''}" data-cat-block="${esc(grp.name)}">
+                <div class="category-block-head" data-action="toggle-category-collapse" data-category="${esc(grp.name)}" role="button" aria-expanded="${!isCollapsed}">
+                  <div class="category-head-toggle">
+                    ${CHEVRON_DOWN_SVG}
+                    <div class="category-head-text">
+                      <div class="category-title-line">
+                        <span class="category-color-dot" style="background:${grp.color}"></span>
+                        <h3 class="category-big-title">${esc(grp.name)}</h3>
+                      </div>
+                      <div class="category-mini-progress">
+                        <div class="category-mini-track">
+                          <div class="category-mini-fill" style="width:${catPct}%;background:${catPct === 100 ? 'var(--green)' : grp.color};"></div>
                         </div>
-                      </button>
-                      ${masteryObj ? `
-                        <button type="button" class="mastery-pill ${masteryObj.cls}" data-action="cycle-mastery" data-id="${t.id}" title="点击切换掌握状态">${masteryObj.label}</button>
-                      ` : ''}
-                      <button type="button" class="task-delete-btn" data-action="delete-task" data-id="${t.id}" aria-label="删除任务" title="删除">
-                        ${CLOSE_ICON_SVG}
-                      </button>
+                        <span class="category-mini-meta tabular">${statusText}</span>
+                      </div>
                     </div>
-                  `;
-                }).join('')}
-              </div>
-            </section>
-          `).join('')}
+                  </div>
+                  <div class="category-head-right">
+                    <span class="category-count">${grp.done} / ${grp.items.length}</span>
+                    <button type="button" class="category-quick-add" data-action="open-add-task-in-cat" data-category="${esc(grp.name)}" title="在「${esc(grp.name)}」下添加任务">+</button>
+                  </div>
+                </div>
+
+                <div class="category-body-collapse">
+                  <div class="category-body-inner">
+                    <div class="ios-list">
+                      ${grp.items.map((t) => {
+                        const done = isTaskDoneOnDate(t, sel);
+                        const review = isReviewTask(t);
+                        const roundInfo = review ? getReviewRoundInfo(t, sel) : null;
+                        const masteryObj = review ? (MASTERY_LEVELS[t.mastery] || MASTERY_LEVELS.weak) : null;
+                        return `
+                          <div class="task-row ${done ? 'is-done' : ''} ${review ? 'is-review-task' : ''}" data-task-row="${t.id}">
+                            <button type="button" class="task-check-btn" data-action="toggle-task" data-id="${t.id}" aria-label="${done ? '取消完成' : '标记完成'}">
+                              <svg class="task-check-svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M4.5 10.5l3.6 3.6 7.4-7.8"/>
+                              </svg>
+                            </button>
+                            <button type="button" class="task-main" data-action="edit-task" data-id="${t.id}">
+                              <div class="task-title">${esc(t.title)}</div>
+                              ${review && t.mistakeNote ? `<div class="task-mistake-note">${esc(t.mistakeNote)}</div>` : ''}
+                              <div class="task-meta">
+                                ${review && roundInfo ? `<span class="review-round-tag">${esc(p.reviewRound(roundInfo.round, roundInfo.total))}</span>` : ''}
+                                <span class="tabular">${t.durationMin} 分钟</span>
+                                ${t.repeatDaily ? '<span>· 每日重复</span>' : ''}
+                              </div>
+                            </button>
+                            ${masteryObj ? `
+                              <button type="button" class="mastery-pill ${masteryObj.cls}" data-action="cycle-mastery" data-id="${t.id}" title="点击切换掌握状态">${masteryObj.label}</button>
+                            ` : ''}
+                            <button type="button" class="task-delete-btn" data-action="delete-task" data-id="${t.id}" aria-label="删除任务" title="删除">
+                              ${CLOSE_ICON_SVG}
+                            </button>
+                          </div>
+                        `;
+                      }).join('')}
+                    </div>
+                  </div>
+                </div>
+              </section>
+            `;
+          }).join('')}
         </div>
       ` : `
         <section class="card empty-box">
@@ -3055,41 +3117,41 @@ Script.complete();`;
       title: p.catSheetTitle,
       primaryLabel: '完成',
       bodyHtml: `
-        <p style="font-size:12px;color:var(--text-secondary);margin:0 0 14px;line-height:1.5;">
-          ${esc(p.catSheetDesc)}
-        </p>
-
-        <form id="form-new-category" style="margin-bottom:18px;">
-          <div class="field">
-            <label class="field-label" for="input-new-cat-name">新建大标题名称</label>
-            <input id="input-new-cat-name" class="input" type="text" required maxlength="18" placeholder="${esc(p.catPlaceholder)}" />
-          </div>
-          <div class="field">
-            <label class="field-label">标记颜色</label>
-            <div class="color-swatch-row" id="cat-color-swatches">
-              ${SYSTEM_COLORS.map((c) => `
-                <button type="button" class="color-swatch ${c === pickedColor ? 'is-selected' : ''}" data-swatch="${c}" style="background:${c}" aria-label="选择颜色"></button>
-              `).join('')}
+        <div class="modal-group-title">新建任务大标题</div>
+        <div class="modal-group-card">
+          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;line-height:1.5;">
+            ${esc(p.catSheetDesc)}
+          </p>
+          <form id="form-new-category">
+            <div class="field">
+              <label class="field-label" for="input-new-cat-name">大标题名称</label>
+              <input id="input-new-cat-name" class="input" type="text" required maxlength="18" placeholder="${esc(p.catPlaceholder)}" />
             </div>
-          </div>
-          <button type="submit" class="btn-primary btn-block">+ 添加自定义大标题</button>
-        </form>
-
-        ${cats.length ? `
-          <div style="padding-top:14px;border-top:1px solid var(--border-separator);">
-            <div class="field-label" style="margin-bottom:8px;">已有大标题（可直接修改名称后点保存）</div>
-            ${cats.map((c) => `
-              <div class="cat-manage-row" data-cat-row="${c.id}">
-                <span class="category-color-dot" style="background:${c.color}"></span>
-                <input class="cat-manage-input" type="text" maxlength="18" value="${esc(c.name)}" data-cat-input="${c.id}" />
-                <button type="button" class="btn-secondary btn-sm" data-save-cat="${c.id}">保存</button>
-                <button type="button" class="task-delete-btn" data-del-cat="${c.id}" aria-label="删除大标题">${CLOSE_ICON_SVG}</button>
+            <div class="field">
+              <label class="field-label">标记颜色</label>
+              <div class="color-swatch-row" id="cat-color-swatches">
+                ${SYSTEM_COLORS.map((c) => `
+                  <button type="button" class="color-swatch ${c === pickedColor ? 'is-selected' : ''}" data-swatch="${c}" style="background:${c}" aria-label="选择颜色"></button>
+                `).join('')}
               </div>
-            `).join('')}
-          </div>
-        ` : `
-          <div class="empty-box" style="padding:16px 8px;font-size:12px;">还没有自定义大标题，在上方输入名称即可创建。</div>
-        `}
+            </div>
+            <button type="submit" class="btn-primary btn-block">+ 添加自定义大标题</button>
+          </form>
+        </div>
+
+        <div class="modal-group-title">已有大标题（可改名或移除）</div>
+        <div class="modal-group-card">
+          ${cats.length ? cats.map((c) => `
+            <div class="cat-manage-row" data-cat-row="${c.id}">
+              <span class="category-color-dot" style="background:${c.color}"></span>
+              <input class="cat-manage-input" type="text" maxlength="18" value="${esc(c.name)}" data-cat-input="${c.id}" />
+              <button type="button" class="btn-secondary btn-sm" data-save-cat="${c.id}">保存</button>
+              <button type="button" class="task-delete-btn" data-del-cat="${c.id}" aria-label="删除大标题">${CLOSE_ICON_SVG}</button>
+            </div>
+          `).join('') : `
+            <div class="empty-box" style="padding:14px 8px;font-size:12px;">还没有自定义大标题，在上方输入名称即可创建。</div>
+          `}
+        </div>
       `
     });
 
@@ -3189,89 +3251,96 @@ Script.complete();`;
       formId: 'form-task-editor',
       bodyHtml: `
         <form id="form-task-editor">
-          <div class="field">
+          <div style="margin-bottom:14px;">
             <div class="segmented-control" style="width:100%;display:grid;grid-template-columns:1fr 1fr;">
               <button type="button" class="seg-btn ${taskType === 'normal' ? 'is-active' : ''}" data-pick-type="normal">普通学习任务</button>
               <button type="button" class="seg-btn ${taskType === 'review' ? 'is-active' : ''}" data-pick-type="review">${esc(p.reviewLabel)}计划</button>
             </div>
           </div>
 
-          <div class="field">
-            <label class="field-label" for="input-task-category">任务大标题（可自由命名或点选已有）</label>
-            <input id="input-task-category" class="input" type="text" required maxlength="18" placeholder="例如：专业课、高数、英语精读" value="${esc(initialCat)}" />
-            ${cats.length ? `
-              <div class="chip-row" id="task-cat-chips" style="margin-top:8px;">
-                ${cats.map((c) => `
-                  <button type="button" class="choice-chip ${c.name === initialCat ? 'is-selected' : ''}" data-pick-cat="${esc(c.name)}">${esc(c.name)}</button>
-                `).join('')}
-              </div>
-            ` : ''}
-          </div>
-
-          <div class="field">
-            <label class="field-label" id="lbl-task-title" for="input-task-title">${taskType === 'review' ? '错题 / 复习知识点名称' : '具体任务内容'}</label>
-            <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="${taskType === 'review' ? '例如：高数定积分换元错题 / 民法善意取得易错点' : '例如：刷完第三章真题并整理笔记'}" value="${esc(initialTitle)}" />
-          </div>
-
-          <div class="form-grid-2">
+          <div class="modal-group-title">基础信息</div>
+          <div class="modal-group-card">
             <div class="field">
-              <label class="field-label" id="lbl-task-date" for="input-task-date">${taskType === 'review' ? '首次复习日期' : '安排日期'}</label>
-              <input id="input-task-date" class="input tabular" type="date" required value="${esc(initialDate)}" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="input-task-duration">预计时长（分）</label>
-              <input id="input-task-duration" class="input tabular" type="number" min="5" max="360" value="${initialDur}" />
-            </div>
-          </div>
-
-          <div id="normal-repeat-section" class="field ${taskType === 'review' ? 'hidden' : ''}">
-            <div class="switch-row">
-              <div>
-                <div style="font-size:14px;font-weight:600;">每日自动重复</div>
-                <div style="font-size:12px;color:var(--text-secondary);">从该日期起每天自动出现在时间轴中</div>
-              </div>
-              <button type="button" id="switch-repeat" class="ios-switch ${repeatDaily ? 'is-on' : ''}" role="switch" aria-checked="${repeatDaily}"></button>
-            </div>
-          </div>
-
-          <div id="review-plan-section" class="${taskType === 'review' ? '' : 'hidden'}">
-            <div class="field">
-              <label class="field-label">智能复习周期（自动排入时间轴与月历）</label>
-              <div class="chip-row" id="review-preset-chips">
-                ${Object.values(REVIEW_PRESETS).map((pr) => `
-                  <button type="button" class="choice-chip ${pr.id === reviewPreset ? 'is-selected' : ''}" data-pick-preset="${pr.id}">${esc(pr.short)}</button>
-                `).join('')}
-              </div>
-              <div id="review-preset-desc" style="font-size:12px;color:var(--text-secondary);margin-top:6px;">
-                ${esc((REVIEW_PRESETS[reviewPreset] || REVIEW_PRESETS.ebbinghaus).desc)}
-              </div>
-              <div class="review-schedule-preview" id="review-schedule-preview">
-                ${renderScheduleChipsHTML(initialDates)}
-              </div>
+              <label class="field-label" for="input-task-category">任务大标题（可自由命名或点选已有）</label>
+              <input id="input-task-category" class="input" type="text" required maxlength="18" placeholder="例如：专业课、高数、英语精读" value="${esc(initialCat)}" />
+              ${cats.length ? `
+                <div class="chip-row" id="task-cat-chips" style="margin-top:8px;">
+                  ${cats.map((c) => `
+                    <button type="button" class="choice-chip ${c.name === initialCat ? 'is-selected' : ''}" data-pick-cat="${esc(c.name)}">${esc(c.name)}</button>
+                  `).join('')}
+                </div>
+              ` : ''}
             </div>
 
             <div class="field">
-              <label class="field-label">当前掌握程度</label>
-              <div class="chip-row" id="review-mastery-chips">
-                ${Object.values(MASTERY_LEVELS).map((m) => `
-                  <button type="button" class="choice-chip ${m.id === mastery ? 'is-selected' : ''}" data-pick-mastery="${m.id}">${m.label}</button>
-                `).join('')}
-              </div>
-            </div>
-
-            <div class="field">
-              <label class="field-label" for="input-mistake-note">错因 / 关键解题思路（选填）</label>
-              <textarea id="input-mistake-note" class="input" maxlength="120" rows="3" placeholder="记录当时为什么做错、关键公式或易混陷阱，下次复习一眼回想…">${esc(initialNote)}</textarea>
+              <label class="field-label" id="lbl-task-title" for="input-task-title">${taskType === 'review' ? '错题 / 复习知识点名称' : '具体任务内容'}</label>
+              <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="${taskType === 'review' ? '例如：高数定积分换元错题 / 民法善意取得易错点' : '例如：刷完第三章真题并整理笔记'}" value="${esc(initialTitle)}" />
             </div>
           </div>
 
-          <div style="margin-top:14px;">
+          <div class="modal-group-title">时间与计划</div>
+          <div class="modal-group-card">
+            <div class="form-grid-2">
+              <div class="field">
+                <label class="field-label" id="lbl-task-date" for="input-task-date">${taskType === 'review' ? '首次复习日期' : '安排日期'}</label>
+                <input id="input-task-date" class="input tabular" type="date" required value="${esc(initialDate)}" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="input-task-duration">预计时长（分）</label>
+                <input id="input-task-duration" class="input tabular" type="number" min="5" max="360" value="${initialDur}" />
+              </div>
+            </div>
+
+            <div id="normal-repeat-section" class="field ${taskType === 'review' ? 'hidden' : ''}" style="margin-bottom:0;">
+              <div class="switch-row">
+                <div>
+                  <div style="font-size:14px;font-weight:600;">每日自动重复</div>
+                  <div style="font-size:12px;color:var(--text-secondary);">从该日期起每天自动出现在时间轴中</div>
+                </div>
+                <button type="button" id="switch-repeat" class="ios-switch ${repeatDaily ? 'is-on' : ''}" role="switch" aria-checked="${repeatDaily}"></button>
+              </div>
+            </div>
+
+            <div id="review-plan-section" class="${taskType === 'review' ? '' : 'hidden'}">
+              <div class="field">
+                <label class="field-label">智能复习周期（自动排入时间轴与月历）</label>
+                <div class="chip-row" id="review-preset-chips">
+                  ${Object.values(REVIEW_PRESETS).map((pr) => `
+                    <button type="button" class="choice-chip ${pr.id === reviewPreset ? 'is-selected' : ''}" data-pick-preset="${pr.id}">${esc(pr.short)}</button>
+                  `).join('')}
+                </div>
+                <div id="review-preset-desc" style="font-size:12px;color:var(--text-secondary);margin-top:6px;">
+                  ${esc((REVIEW_PRESETS[reviewPreset] || REVIEW_PRESETS.ebbinghaus).desc)}
+                </div>
+                <div class="review-schedule-preview" id="review-schedule-preview">
+                  ${renderScheduleChipsHTML(initialDates)}
+                </div>
+              </div>
+
+              <div class="field">
+                <label class="field-label">当前掌握程度</label>
+                <div class="chip-row" id="review-mastery-chips">
+                  ${Object.values(MASTERY_LEVELS).map((m) => `
+                    <button type="button" class="choice-chip ${m.id === mastery ? 'is-selected' : ''}" data-pick-mastery="${m.id}">${m.label}</button>
+                  `).join('')}
+                </div>
+              </div>
+
+              <div class="field" style="margin-bottom:0;">
+                <label class="field-label" for="input-mistake-note">错因 / 关键解题思路（选填）</label>
+                <textarea id="input-mistake-note" class="input" maxlength="120" rows="3" placeholder="记录当时为什么做错、关键公式或易混陷阱，下次复习一眼回想…">${esc(initialNote)}</textarea>
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top:6px;">
             <button type="submit" id="btn-save-task" class="btn-primary btn-block">${isEdit ? '保存修改' : (taskType === 'review' ? '生成复习计划并排入时间轴' : '添加到任务序列')}</button>
             ${isEdit ? `
               <div class="btn-row" style="margin-top:10px;">
                 <button type="button" id="btn-move-tomorrow" class="btn-secondary">${taskType === 'review' ? '明日加练一轮' : '移至明日'}</button>
                 <button type="button" id="btn-focus-this-task" class="btn-secondary" style="color:var(--accent);">专注此任务</button>
               </div>
+              <button type="button" id="btn-convert-review" class="btn-secondary btn-block ${taskType === 'review' ? 'hidden' : ''}" style="margin-top:10px;color:var(--orange);">转为${esc(p.reviewLabel)}计划（自动按遗忘曲线排期）</button>
             ` : ''}
           </div>
         </form>
@@ -3288,6 +3357,7 @@ Script.complete();`;
     const presetDescEl = document.getElementById('review-preset-desc');
     const previewEl = document.getElementById('review-schedule-preview');
     const saveBtn = document.getElementById('btn-save-task');
+    const convertBtn = document.getElementById('btn-convert-review');
 
     function refreshReviewPreview() {
       const dates = computeCurrentReviewDates();
@@ -3295,23 +3365,34 @@ Script.complete();`;
       presetDescEl.textContent = (REVIEW_PRESETS[reviewPreset] || REVIEW_PRESETS.ebbinghaus).desc;
     }
 
+    function setTaskTypeMode(nextType) {
+      taskType = nextType;
+      modalPage.querySelectorAll('[data-pick-type]').forEach((b) => b.classList.toggle('is-active', b.dataset.pickType === nextType));
+      const isRev = taskType === 'review';
+      normalSec.classList.toggle('hidden', isRev);
+      reviewSec.classList.toggle('hidden', !isRev);
+      if (convertBtn) convertBtn.classList.toggle('hidden', isRev);
+      titleLabel.textContent = isRev ? '错题 / 复习知识点名称' : '具体任务内容';
+      titleInput.placeholder = isRev ? '例如：高数定积分换元错题 / 民法善意取得易错点' : '例如：刷完第三章真题并整理笔记';
+      dateLabel.textContent = isRev ? '首次复习日期' : '安排日期';
+      if (!isEdit) saveBtn.textContent = isRev ? '生成复习计划并排入时间轴' : '添加到任务序列';
+      if (isRev) {
+        scheduleDirty = true;
+        refreshReviewPreview();
+      }
+    }
+
     modalPage.querySelectorAll('[data-pick-type]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        taskType = btn.dataset.pickType;
-        modalPage.querySelectorAll('[data-pick-type]').forEach((b) => b.classList.toggle('is-active', b === btn));
-        const isRev = taskType === 'review';
-        normalSec.classList.toggle('hidden', isRev);
-        reviewSec.classList.toggle('hidden', !isRev);
-        titleLabel.textContent = isRev ? '错题 / 复习知识点名称' : '具体任务内容';
-        titleInput.placeholder = isRev ? '例如：高数定积分换元错题 / 民法善意取得易错点' : '例如：刷完第三章真题并整理笔记';
-        dateLabel.textContent = isRev ? '首次复习日期' : '安排日期';
-        if (!isEdit) saveBtn.textContent = isRev ? '生成复习计划并排入时间轴' : '添加到任务序列';
-        if (isRev) {
-          scheduleDirty = true;
-          refreshReviewPreview();
-        }
-      });
+      btn.addEventListener('click', () => setTaskTypeMode(btn.dataset.pickType));
     });
+
+    if (convertBtn) {
+      convertBtn.addEventListener('click', () => {
+        setTaskTypeMode('review');
+        reviewSec.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        showHud('已切换为艾宾浩斯复习计划，点「保存」生效', 'var(--orange)');
+      });
+    }
 
     modalPage.querySelectorAll('[data-pick-preset]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -3443,6 +3524,10 @@ Script.complete();`;
           });
           state.selectedDate = date;
           state.viewMonth = currentMonthKey(date);
+          if (state.collapsedCategories.has(category)) {
+            state.collapsedCategories.delete(category);
+            saveCollapsedCategories();
+          }
           await loadBootstrap(true);
           showHud(taskType === 'review'
             ? `已生成 ${reviewDates.length} 轮复习计划并自动排入时间轴`
@@ -3581,24 +3666,27 @@ Script.complete();`;
       formId: 'form-exam-editor',
       bodyHtml: `
         <form id="form-exam-editor">
-          <div class="field">
-            <label class="field-label" for="input-exam-name">考试或目标名称</label>
-            <input id="input-exam-name" class="input" type="text" required maxlength="30" placeholder="例如：2027 全国考研初试" value="${esc(isEdit ? existingExam.name : '')}" />
-          </div>
-          <div class="field">
-            <label class="field-label" for="input-exam-date">目标日期</label>
-            <input id="input-exam-date" class="input tabular" type="date" required value="${esc(isEdit ? existingExam.targetDate : addDaysStr(60))}" />
-          </div>
-          <div class="field">
-            <label class="field-label" for="input-exam-tag">阶段标签</label>
-            <input id="input-exam-tag" class="input" type="text" maxlength="12" value="${esc(isEdit ? existingExam.tag : '核心目标')}" />
-          </div>
-          <div class="field">
-            <label class="field-label">主题标识色</label>
-            <div class="color-swatch-row">
-              ${SYSTEM_COLORS.map((c) => `
-                <button type="button" class="color-swatch ${c === pickedColor ? 'is-selected' : ''}" data-exam-swatch="${c}" style="background:${c}" aria-label="选择颜色"></button>
-              `).join('')}
+          <div class="modal-group-title">目标信息</div>
+          <div class="modal-group-card">
+            <div class="field">
+              <label class="field-label" for="input-exam-name">考试或目标名称</label>
+              <input id="input-exam-name" class="input" type="text" required maxlength="30" placeholder="例如：2027 全国考研初试" value="${esc(isEdit ? existingExam.name : '')}" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="input-exam-date">目标日期</label>
+              <input id="input-exam-date" class="input tabular" type="date" required value="${esc(isEdit ? existingExam.targetDate : addDaysStr(60))}" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="input-exam-tag">阶段标签</label>
+              <input id="input-exam-tag" class="input" type="text" maxlength="12" value="${esc(isEdit ? existingExam.tag : '核心目标')}" />
+            </div>
+            <div class="field">
+              <label class="field-label">主题标识色</label>
+              <div class="color-swatch-row">
+                ${SYSTEM_COLORS.map((c) => `
+                  <button type="button" class="color-swatch ${c === pickedColor ? 'is-selected' : ''}" data-exam-swatch="${c}" style="background:${c}" aria-label="选择颜色"></button>
+                `).join('')}
+              </div>
             </div>
           </div>
           <button type="submit" class="btn-primary btn-block">${isEdit ? '保存更改' : '保存并置顶显示'}</button>
@@ -3648,21 +3736,24 @@ Script.complete();`;
       formId: 'form-create-group',
       bodyHtml: `
         <form id="form-create-group">
-          <div class="field">
-            <label class="field-label" for="input-group-name">小组名称</label>
-            <input id="input-group-name" class="input" type="text" required maxlength="24" placeholder="例如：考研每日打卡小组" />
-          </div>
-          <div class="field">
-            <label class="field-label" for="input-group-exam">共同备考目标</label>
-            <input id="input-group-exam" class="input" type="text" required maxlength="24" placeholder="例如：2027 考研初试" />
-          </div>
-          <div class="field">
-            <label class="field-label" for="input-group-date">共同目标日期</label>
-            <input id="input-group-date" class="input tabular" type="date" required value="${addDaysStr(80)}" />
-          </div>
-          <div class="field">
-            <label class="field-label" for="input-group-notice">小组公告</label>
-            <input id="input-group-notice" class="input" type="text" maxlength="60" value="每天按计划完成打卡，互相监督。" />
+          <div class="modal-group-title">小组资料</div>
+          <div class="modal-group-card">
+            <div class="field">
+              <label class="field-label" for="input-group-name">小组名称</label>
+              <input id="input-group-name" class="input" type="text" required maxlength="24" placeholder="例如：考研每日打卡小组" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="input-group-exam">共同备考目标</label>
+              <input id="input-group-exam" class="input" type="text" required maxlength="24" placeholder="例如：2027 考研初试" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="input-group-date">共同目标日期</label>
+              <input id="input-group-date" class="input tabular" type="date" required value="${addDaysStr(80)}" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="input-group-notice">小组公告</label>
+              <input id="input-group-notice" class="input" type="text" maxlength="60" value="每天按计划完成打卡，互相监督。" />
+            </div>
           </div>
           <button type="submit" class="btn-primary btn-block">立即创建并生成邀请码</button>
         </form>
@@ -3695,15 +3786,19 @@ Script.complete();`;
       bodyHtml: `
         <form id="form-join-group">
           ${sharedGroup ? `
-            <div class="card card-padded" style="margin-bottom:14px;background:var(--bg-surface);">
+            <div class="modal-group-title">小组邀请</div>
+            <div class="modal-group-card">
               <div style="font-size:12px;color:var(--accent);font-weight:600;">收到学习小组邀请</div>
               <div style="font-size:16px;font-weight:700;margin-top:4px;">${esc(sharedGroup.name)}</div>
               <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">共同目标：${esc(sharedGroup.examName)} · ${esc(sharedGroup.targetDate)}</div>
             </div>
           ` : ''}
-          <div class="field">
-            <label class="field-label" for="input-join-code">输入 6 位小组邀请码</label>
-            <input id="input-join-code" class="input tabular" style="text-transform:uppercase;letter-spacing:0.12em;font-weight:700;" type="text" required maxlength="8" placeholder="输入 6 位邀请码" value="${esc(prefillCode)}" />
+          <div class="modal-group-title">邀请码验证</div>
+          <div class="modal-group-card">
+            <div class="field">
+              <label class="field-label" for="input-join-code">输入 6 位小组邀请码</label>
+              <input id="input-join-code" class="input tabular" style="text-transform:uppercase;letter-spacing:0.12em;font-weight:700;" type="text" required maxlength="8" placeholder="输入 6 位邀请码" value="${esc(prefillCode)}" />
+            </div>
           </div>
           <button type="submit" class="btn-primary btn-block">立即加入小组</button>
         </form>
@@ -4150,7 +4245,10 @@ Script.complete();`;
     if (action === 'open-add-task') return openTaskEditorSheet(null, '', 'normal');
     if (action === 'open-add-review') return openTaskEditorSheet(null, '', 'review');
     if (action === 'open-review-notebook') return openReviewNotebookSheet('all');
-    if (action === 'open-add-task-in-cat') return openTaskEditorSheet(null, btn.dataset.category || '', state.taskFilter === 'review' ? 'review' : 'normal');
+    if (action === 'open-add-task-in-cat') {
+      e.stopPropagation();
+      return openTaskEditorSheet(null, btn.dataset.category || '', state.taskFilter === 'review' ? 'review' : 'normal');
+    }
     if (action === 'open-manage-categories') return openManageCategoriesSheet();
     if (action === 'open-add-exam') return openExamEditorSheet(null);
     if (action === 'open-create-group') return openCreateGroupSheet();
@@ -4158,6 +4256,45 @@ Script.complete();`;
     if (action === 'open-focus') return openFocusSheet();
     if (action === 'open-analytics') return openAnalyticsSheet();
     if (action === 'trigger-import-backup') { importBackupInput.click(); return; }
+
+    if (action === 'toggle-category-collapse') {
+      if (e.target.closest('.category-quick-add')) return;
+      const catName = btn.dataset.category || '';
+      if (!catName) return;
+      const nextCollapsed = !state.collapsedCategories.has(catName);
+      if (nextCollapsed) state.collapsedCategories.add(catName);
+      else state.collapsedCategories.delete(catName);
+      saveCollapsedCategories();
+      const block = btn.closest('.category-block');
+      if (block) block.classList.toggle('is-collapsed', nextCollapsed);
+      btn.setAttribute('aria-expanded', String(!nextCollapsed));
+      const allBtn = document.getElementById('btn-toggle-all-cats');
+      if (allBtn) {
+        const blocks = Array.from(viewContainer.querySelectorAll('.category-block'));
+        const allFolded = blocks.length > 0 && blocks.every((b) => b.classList.contains('is-collapsed'));
+        allBtn.textContent = allFolded ? '全部展开' : '全部收起';
+      }
+      return;
+    }
+
+    if (action === 'toggle-all-categories') {
+      const blocks = Array.from(viewContainer.querySelectorAll('.category-block'));
+      if (!blocks.length) return;
+      const shouldExpand = blocks.every((b) => b.classList.contains('is-collapsed'));
+      blocks.forEach((b) => {
+        const name = b.dataset.catBlock || '';
+        if (name) {
+          if (shouldExpand) state.collapsedCategories.delete(name);
+          else state.collapsedCategories.add(name);
+        }
+        b.classList.toggle('is-collapsed', !shouldExpand);
+        const head = b.querySelector('.category-block-head');
+        if (head) head.setAttribute('aria-expanded', String(shouldExpand));
+      });
+      saveCollapsedCategories();
+      btn.textContent = shouldExpand ? '全部收起' : '全部展开';
+      return;
+    }
 
     if (action === 'set-task-filter') {
       const next = btn.dataset.filter || 'all';
