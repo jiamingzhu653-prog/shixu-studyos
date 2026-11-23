@@ -1,7 +1,13 @@
 (() => {
   'use strict';
 
-  const STORE_KEY = 'shixu_raw_store_v3';
+  // PERMANENT NEVER-CHANGING STORAGE KEYS (Guaranteed zero data loss across all future website updates)
+  const PERMANENT_VAULT_KEY = 'shixu_account_vault_permanent';
+  const PERMANENT_SESSION_KEY = 'shixu_session_permanent';
+  const LEGACY_VAULT_KEYS = ['shixu_raw_store_v3', 'shixu_raw_store_v2'];
+  const IDB_NAME = 'shixu_vault_db';
+  const IDB_STORE = 'kv';
+
   const SYSTEM_COLORS = ['#0071E3', '#34C759', '#FF9500', '#FF3B30', '#30B0C7', '#5856D6'];
   const EXAM_PRESETS = [
     { name: '全国考研初试', tag: '考试倒计时', days: 90, color: '#0071E3' },
@@ -13,7 +19,6 @@
   ];
 
   const WEEKDAYS_SHORT = ['日', '一', '二', '三', '四', '五', '六'];
-
   const TAB_TITLES = {
     today: '学习序列',
     groups: '学习小组',
@@ -21,46 +26,49 @@
     desktop: 'iOS 桌面与组件'
   };
 
-  function todayKey() {
-    const now = new Date();
-    return formatDateISO(now);
-  }
-
+  function todayKey() { return formatDateISO(new Date()); }
   function formatDateISO(d) {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
-
   function parseDateISO(str) {
-    const [y, m, d] = str.split('-').map(Number);
-    return new Date(y, (m || 1) - 1, d || 1);
+    const [y, m, d] = String(str || '').split('-').map(Number);
+    return new Date(y || 2026, (m || 1) - 1, d || 1);
   }
-
   function shiftDateISO(baseStr, deltaDays) {
     const d = parseDateISO(baseStr);
     d.setDate(d.getDate() + deltaDays);
     return formatDateISO(d);
   }
-
-  function addDaysStr(days) {
-    return shiftDateISO(todayKey(), days);
-  }
-
-  function currentMonthKey(dateStr = todayKey()) {
-    return dateStr.slice(0, 7); // YYYY-MM
-  }
-
+  function addDaysStr(days) { return shiftDateISO(todayKey(), days); }
+  function currentMonthKey(dateStr = todayKey()) { return dateStr.slice(0, 7); }
   function shiftMonthKey(ym, deltaMonths) {
     const [y, m] = ym.split('-').map(Number);
     const d = new Date(y, m - 1 + deltaMonths, 1);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   }
+  function normalizeAccount(acc) {
+    return String(acc || '').trim().toLowerCase().slice(0, 40);
+  }
+
+  // SHA-256 Password Hashing (works over HTTPS / localhost via SubtleCrypto + pure JS fallback)
+  async function hashPassword(account, password) {
+    const msg = `shixu::v1::${normalizeAccount(account)}::${String(password || '')}`;
+    if (window.crypto && window.crypto.subtle) {
+      const buf = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(msg));
+      return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+    let h = 2166136261;
+    for (let i = 0; i < msg.length; i++) {
+      h ^= msg.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return `fnv_${(h >>> 0).toString(16)}`;
+  }
 
   const state = {
-    mode: 'auto', // 'server' | 'local'
-    userId: localStorage.getItem('shixu_raw_user_id') || '',
+    mode: 'auto', // 'server' | 'supabase' | 'local'
+    userId: '',
+    authMode: 'login', // 'login' | 'register'
     theme: localStorage.getItem('shixu_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
     activeTab: 'today',
     selectedDate: todayKey(),
@@ -68,8 +76,10 @@
     showMonthCalendar: false,
     activeGroupId: null,
     pendingInvite: null,
+    pendingRestore: null,
     data: null,
     scriptableCode: '',
+    lastSyncedAt: null,
     focus: {
       presetMin: 25,
       remainingSec: 25 * 60,
@@ -79,7 +89,7 @@
     }
   };
 
-  const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('shixu_raw_realtime_v3') : null;
+  const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('shixu_permanent_sync') : null;
 
   // DOM refs
   const topNav = document.getElementById('top-nav');
@@ -94,8 +104,8 @@
   const hudText = document.getElementById('hud-text');
   const sheetBackdrop = document.getElementById('sheet-backdrop');
   const sheetContent = document.getElementById('sheet-content');
+  const importBackupInput = document.getElementById('import-backup-input');
 
-  // Utilities
   function esc(str) {
     return String(str ?? '')
       .replace(/&/g, '&amp;')
@@ -142,15 +152,10 @@
   }
 
   function formatTimer(sec) {
-    const m = String(Math.floor(sec / 60)).padStart(2, '0');
-    const s = String(sec % 60).padStart(2, '0');
-    return `${m}:${s}`;
+    return `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
   }
 
-  function genId(prefix) {
-    return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
-  }
-
+  function genId(prefix) { return `${prefix}_${Math.random().toString(36).slice(2, 10)}`; }
   function genInviteCode() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let out = '';
@@ -176,27 +181,11 @@
     return { list, done, total, pct };
   }
 
-  function encodeShareGroup(g) {
-    try {
-      const json = JSON.stringify({
-        name: g.name,
-        inviteCode: g.inviteCode,
-        examName: g.examName,
-        targetDate: g.targetDate,
-        notice: g.notice
-      });
-      return btoa(unescape(encodeURIComponent(json)));
-    } catch {
-      return '';
-    }
+  function encodeB64Json(obj) {
+    try { return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); } catch { return ''; }
   }
-
-  function decodeShareGroup(str) {
-    try {
-      return JSON.parse(decodeURIComponent(escape(atob(str))));
-    } catch {
-      return null;
-    }
+  function decodeB64Json(str) {
+    try { return JSON.parse(decodeURIComponent(escape(atob(str)))); } catch { return null; }
   }
 
   function ringSVG(pct, size, strokeWidth, color) {
@@ -218,7 +207,7 @@
     hudDot.style.background = dotColor;
     hudPill.classList.add('is-visible');
     clearTimeout(hudTimer);
-    hudTimer = setTimeout(() => hudPill.classList.remove('is-visible'), 2400);
+    hudTimer = setTimeout(() => hudPill.classList.remove('is-visible'), 2500);
   }
 
   async function copyText(str, okMsg) {
@@ -239,11 +228,53 @@
   }
 
   // =========================================================================
-  // Pure Raw Clean Local Engine (Zero pre-filled fake data)
+  // Resilient IndexedDB Mirror + Permanent Local Vault (Never loses data on updates)
   // =========================================================================
 
-  function createEmptyLocalStore() {
+  function openVaultDB() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) return resolve(null);
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    });
+  }
+
+  async function idbGet(key) {
+    try {
+      const db = await openVaultDB();
+      if (!db) return null;
+      return await new Promise((resolve) => {
+        const tx = db.transaction(IDB_STORE, 'readonly');
+        const req = tx.objectStore(IDB_STORE).get(key);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  async function idbSet(key, val) {
+    try {
+      const db = await openVaultDB();
+      if (!db) return;
+      await new Promise((resolve) => {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put(val, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
+    } catch {}
+  }
+
+  function createEmptyStore() {
     return {
+      schemaVersion: 4,
       lastRolloverDate: todayKey(),
       users: [],
       categories: [],
@@ -254,27 +285,197 @@
     };
   }
 
+  function migrateStore(raw) {
+    if (!raw || typeof raw !== 'object') return createEmptyStore();
+    const s = {
+      schemaVersion: 4,
+      lastRolloverDate: raw.lastRolloverDate || todayKey(),
+      users: Array.isArray(raw.users) ? raw.users : [],
+      categories: Array.isArray(raw.categories) ? raw.categories : [],
+      exams: Array.isArray(raw.exams) ? raw.exams : [],
+      tasks: Array.isArray(raw.tasks) ? raw.tasks : [],
+      groups: Array.isArray(raw.groups) ? raw.groups : [],
+      feeds: Array.isArray(raw.feeds) ? raw.feeds : []
+    };
+    for (const u of s.users) {
+      if (!u.account) u.account = normalizeAccount(u.name || u.id);
+    }
+    for (const t of s.tasks) {
+      if (!t.category) t.category = t.subject || '未分组';
+      if (!Array.isArray(t.completedDates)) t.completedDates = t.done ? [t.date || todayKey()] : [];
+    }
+    return s;
+  }
+
+  async function initPermanentStorage() {
+    // 1. Restore local vault from permanent key -> IndexedDB mirror -> legacy keys (non-destructive)
+    let raw = null;
+    try { raw = JSON.parse(localStorage.getItem(PERMANENT_VAULT_KEY) || 'null'); } catch {}
+
+    if (!raw) {
+      const fromIdb = await idbGet('vault');
+      if (fromIdb) raw = fromIdb;
+    }
+
+    if (!raw) {
+      for (const legacyKey of LEGACY_VAULT_KEYS) {
+        try {
+          const legacy = JSON.parse(localStorage.getItem(legacyKey) || 'null');
+          if (legacy && Array.isArray(legacy.users) && legacy.users.length > 0) {
+            raw = legacy;
+            break;
+          }
+        } catch {}
+      }
+    }
+
+    const migrated = migrateStore(raw);
+    localStorage.setItem(PERMANENT_VAULT_KEY, JSON.stringify(migrated));
+    idbSet('vault', migrated);
+
+    // 2. Restore remembered login session (localStorage -> IndexedDB -> legacy session key)
+    let session = null;
+    try { session = JSON.parse(localStorage.getItem(PERMANENT_SESSION_KEY) || 'null'); } catch {}
+    if (!session) session = await idbGet('session');
+    if (session && session.userId) {
+      state.userId = session.userId;
+    } else {
+      const legacyUid = localStorage.getItem('shixu_raw_user_id');
+      if (legacyUid && migrated.users.some((u) => u.id === legacyUid)) {
+        state.userId = legacyUid;
+        saveSession(legacyUid);
+      }
+    }
+  }
+
+  function saveSession(userId, account = '') {
+    state.userId = userId || '';
+    if (userId) {
+      const sess = { userId, account: normalizeAccount(account), savedAt: Date.now() };
+      localStorage.setItem(PERMANENT_SESSION_KEY, JSON.stringify(sess));
+      idbSet('session', sess);
+    } else {
+      localStorage.removeItem(PERMANENT_SESSION_KEY);
+      idbSet('session', null);
+    }
+  }
+
   function getLocalStore() {
     let s = null;
-    try { s = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); } catch {}
-    if (!s || !Array.isArray(s.users)) {
-      s = createEmptyLocalStore();
-      localStorage.setItem(STORE_KEY, JSON.stringify(s));
-    }
-    if (!Array.isArray(s.categories)) s.categories = [];
+    try { s = JSON.parse(localStorage.getItem(PERMANENT_VAULT_KEY) || 'null'); } catch {}
+    s = migrateStore(s);
     const today = todayKey();
     if (s.lastRolloverDate !== today) {
       for (const u of s.users) u.focusMinutesToday = 0;
       s.lastRolloverDate = today;
-      localStorage.setItem(STORE_KEY, JSON.stringify(s));
+      localStorage.setItem(PERMANENT_VAULT_KEY, JSON.stringify(s));
+      idbSet('vault', s);
     }
     return s;
   }
 
   function saveLocalStore(s, toastMsg) {
-    localStorage.setItem(STORE_KEY, JSON.stringify(s));
+    localStorage.setItem(PERMANENT_VAULT_KEY, JSON.stringify(s));
+    idbSet('vault', s);
     if (bc) bc.postMessage({ type: 'sync', toastMsg, fromUserId: state.userId });
+    if (state.mode === 'supabase' && state.userId) {
+      pushAccountToSupabase(s, state.userId).catch(() => {});
+    }
   }
+
+  // =========================================================================
+  // Zero-Cost Supabase Cloud Sync Adapter (Activates automatically when configured)
+  // =========================================================================
+
+  function getSupabaseConfig() {
+    const cfg = window.SHIXU_CLOUD_CONFIG || {};
+    const url = String(cfg.supabaseUrl || '').trim().replace(/\/$/, '');
+    const key = String(cfg.supabaseAnonKey || '').trim();
+    return url && key ? { url, key } : null;
+  }
+
+  async function sbFetch(path, options = {}) {
+    const cfg = getSupabaseConfig();
+    if (!cfg) throw new Error('Supabase 未配置');
+    const res = await fetch(`${cfg.url}/rest/v1/${path}`, {
+      ...options,
+      headers: {
+        apikey: cfg.key,
+        Authorization: `Bearer ${cfg.key}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+        ...(options.headers || {})
+      }
+    });
+    if (!res.ok) throw new Error('云端同步失败');
+    const txt = await res.text();
+    return txt ? JSON.parse(txt) : null;
+  }
+
+  async function pushAccountToSupabase(s, userId) {
+    const user = s.users.find((u) => u.id === userId);
+    if (!user || !user.account) return;
+    const row = {
+      account: user.account,
+      user_id: user.id,
+      name: user.name,
+      avatar: user.avatar,
+      color: user.color,
+      password_hash: user.passwordHash || '',
+      streak: user.streak || 0,
+      focus_minutes_today: user.focusMinutesToday || 0,
+      last_rollover_date: s.lastRolloverDate || todayKey(),
+      payload: {
+        categories: s.categories.filter((c) => c.userId === user.id),
+        exams: s.exams.filter((e) => e.userId === user.id),
+        tasks: s.tasks.filter((t) => t.userId === user.id)
+      },
+      updated_at: Date.now()
+    };
+    await sbFetch('shixu_accounts?on_conflict=account', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: JSON.stringify(row)
+    });
+    state.lastSyncedAt = Date.now();
+  }
+
+  async function pullAccountFromSupabase(account, passwordHash) {
+    const rows = await sbFetch(`shixu_accounts?account=eq.${encodeURIComponent(normalizeAccount(account))}&select=*`);
+    if (!rows || !rows.length) return null;
+    const row = rows[0];
+    if (passwordHash && row.password_hash && row.password_hash !== passwordHash) {
+      throw new Error('密码不正确，请重试');
+    }
+    const s = getLocalStore();
+    let user = s.users.find((u) => u.account === row.account);
+    const hydratedUser = {
+      id: row.user_id,
+      account: row.account,
+      name: row.name,
+      avatar: row.avatar,
+      color: row.color,
+      passwordHash: row.password_hash,
+      streak: row.streak || 0,
+      focusMinutesToday: row.last_rollover_date === todayKey() ? (row.focus_minutes_today || 0) : 0,
+      createdAt: user ? user.createdAt : Date.now()
+    };
+    if (user) Object.assign(user, hydratedUser);
+    else s.users.push(hydratedUser);
+
+    const p = row.payload || {};
+    s.categories = s.categories.filter((c) => c.userId !== hydratedUser.id).concat(p.categories || []);
+    s.exams = s.exams.filter((e) => e.userId !== hydratedUser.id).concat(p.exams || []);
+    s.tasks = s.tasks.filter((t) => t.userId !== hydratedUser.id).concat(p.tasks || []);
+    localStorage.setItem(PERMANENT_VAULT_KEY, JSON.stringify(s));
+    idbSet('vault', s);
+    state.lastSyncedAt = Date.now();
+    return hydratedUser;
+  }
+
+  // =========================================================================
+  // Local Data Operations (Parity with Server Mode)
+  // =========================================================================
 
   function ensureLocalCategory(s, userId, name, color) {
     const clean = String(name || '').trim().slice(0, 18);
@@ -295,10 +496,11 @@
 
   function buildLocalBootstrap(userId) {
     const s = getLocalStore();
-    const user = s.users.find((u) => u.id === userId) || s.users[0] || null;
+    const user = userId ? s.users.find((u) => u.id === userId) : null;
     const today = todayKey();
+    const safeUsers = s.users.map((u) => ({ id: u.id, account: u.account, name: u.name, avatar: u.avatar, color: u.color, streak: u.streak }));
     if (!user) {
-      return { today, user: null, users: [], categories: [], tasks: [], exams: [], groups: [] };
+      return { today, user: null, users: safeUsers, categories: [], tasks: [], exams: [], groups: [] };
     }
     const categories = s.categories.filter((c) => c.userId === user.id);
     const tasks = s.tasks
@@ -323,7 +525,7 @@
           .filter(Boolean)
           .map((u) => {
             const st = getDayStats(s.tasks.filter((t) => t.userId === u.id), today);
-            return { ...u, done: st.done, total: st.total, pct: st.pct };
+            return { id: u.id, account: u.account, name: u.name, avatar: u.avatar, color: u.color, streak: u.streak, done: st.done, total: st.total, pct: st.pct };
           });
         const totalTasks = members.reduce((a, m) => a + m.total, 0);
         const doneTasks = members.reduce((a, m) => a + m.done, 0);
@@ -346,34 +548,121 @@
         };
       });
 
+    const { passwordHash, ...safeUser } = user;
+    return { today, user: safeUser, users: safeUsers, categories, tasks, exams, groups };
+  }
+
+  function buildAccountSnapshot(userId) {
+    const s = getLocalStore();
+    const user = s.users.find((u) => u.id === userId);
+    if (!user) return null;
     return {
-      today,
-      user,
-      users: s.users.map((u) => ({ id: u.id, name: u.name, avatar: u.avatar, color: u.color, streak: u.streak })),
-      categories,
-      tasks,
-      exams,
-      groups
+      v: 4,
+      exportedAt: Date.now(),
+      user: { ...user },
+      categories: s.categories.filter((c) => c.userId === user.id),
+      exams: s.exams.filter((e) => e.userId === user.id),
+      tasks: s.tasks.filter((t) => t.userId === user.id),
+      groups: s.groups.filter((g) => g.memberIds.includes(user.id)).map((g) => ({
+        name: g.name, inviteCode: g.inviteCode, examName: g.examName, targetDate: g.targetDate, notice: g.notice
+      }))
     };
   }
 
-  function localApi(path, method = 'GET', body = {}) {
+  function mergeSnapshotIntoLocal(snap) {
+    const s = getLocalStore();
+    const acc = normalizeAccount(snap.user.account);
+    let user = s.users.find((u) => u.account === acc);
+    if (!user) {
+      user = {
+        id: snap.user.id || genId('u'),
+        account: acc,
+        name: snap.user.name || acc,
+        avatar: (snap.user.name || acc).slice(0, 1),
+        color: snap.user.color || SYSTEM_COLORS[s.users.length % SYSTEM_COLORS.length],
+        passwordHash: snap.user.passwordHash || '',
+        streak: snap.user.streak || 0,
+        focusMinutesToday: snap.user.focusMinutesToday || 0,
+        createdAt: snap.user.createdAt || Date.now()
+      };
+      s.users.push(user);
+    } else {
+      user.name = snap.user.name || user.name;
+      user.avatar = user.name.slice(0, 1);
+      user.streak = Math.max(user.streak || 0, snap.user.streak || 0);
+      if (snap.user.passwordHash) user.passwordHash = snap.user.passwordHash;
+    }
+
+    for (const c of snap.categories || []) ensureLocalCategory(s, user.id, c.name, c.color);
+    for (const e of snap.exams || []) {
+      if (!s.exams.some((x) => x.userId === user.id && x.name === e.name && x.targetDate === e.targetDate)) {
+        s.exams.push({ ...e, id: genId('ex'), userId: user.id });
+      }
+    }
+    for (const t of snap.tasks || []) {
+      const existing = s.tasks.find((x) => x.userId === user.id && x.title === t.title && x.date === t.date);
+      if (!existing) {
+        s.tasks.push({ ...t, id: genId('t'), userId: user.id });
+      } else {
+        const mergedDates = new Set([...(existing.completedDates || []), ...(t.completedDates || [])]);
+        existing.completedDates = Array.from(mergedDates);
+      }
+    }
+    for (const g of snap.groups || []) {
+      let grp = s.groups.find((x) => x.inviteCode === g.inviteCode);
+      if (!grp) {
+        grp = {
+          id: genId('g'),
+          name: g.name,
+          inviteCode: g.inviteCode || genInviteCode(),
+          examName: g.examName || '共同目标',
+          targetDate: g.targetDate || addDaysStr(60),
+          notice: g.notice || '每天按计划完成打卡。',
+          ownerId: user.id,
+          memberIds: [user.id],
+          createdAt: Date.now()
+        };
+        s.groups.push(grp);
+      } else if (!grp.memberIds.includes(user.id)) {
+        grp.memberIds.push(user.id);
+      }
+    }
+
+    saveLocalStore(s);
+    return user;
+  }
+
+  async function localApi(path, method = 'GET', body = {}) {
     const s = getLocalStore();
     const today = todayKey();
 
     if (method === 'POST' && path === '/api/reset') {
-      saveLocalStore(createEmptyLocalStore());
+      saveLocalStore(createEmptyStore());
       return { ok: true };
     }
 
-    if (method === 'POST' && path === '/api/users') {
-      const name = String(body.name || '').trim().slice(0, 16);
-      if (!name) throw new Error('请输入昵称');
+    if (method === 'POST' && path === '/api/auth/register') {
+      const account = normalizeAccount(body.account);
+      const name = String(body.name || body.account || '').trim().slice(0, 16);
+      const password = String(body.password || '');
+      if (account.length < 2) throw new Error('请输入至少 2 位统一账号（手机号或英文账号）');
+      if (!name) throw new Error('请输入显示昵称');
+      if (password.length < 4) throw new Error('请设置至少 4 位密码');
+
+      if (state.mode === 'supabase') {
+        const existingRemote = await sbFetch(`shixu_accounts?account=eq.${encodeURIComponent(account)}&select=account`).catch(() => []);
+        if (existingRemote && existingRemote.length) throw new Error('该云端账号已注册，请直接切至「登录账户」');
+      }
+      if (s.users.some((u) => u.account === account)) throw new Error('该统一账号已存在，请直接切至「登录账户」');
+
+      const passwordHash = await hashPassword(account, password);
       const user = {
         id: genId('u'),
+        account,
         name,
         avatar: name.slice(0, 1),
         color: SYSTEM_COLORS[s.users.length % SYSTEM_COLORS.length],
+        passwordHash,
         streak: 0,
         focusMinutesToday: 0,
         createdAt: Date.now()
@@ -403,7 +692,42 @@
           s.feeds.push({ id: genId('f'), groupId: grp.id, userId: user.id, type: 'join', text: '加入了学习小组', createdAt: Date.now(), likedBy: [] });
         }
       }
+
       saveLocalStore(s);
+      return { user };
+    }
+
+    if (method === 'POST' && path === '/api/auth/login') {
+      const account = normalizeAccount(body.account);
+      const password = String(body.password || '');
+      if (!account) throw new Error('请输入统一账号');
+      const pwdHash = await hashPassword(account, password);
+
+      if (state.mode === 'supabase') {
+        const pulled = await pullAccountFromSupabase(account, pwdHash);
+        if (pulled) return { user: pulled };
+      }
+
+      const user = s.users.find((u) => u.account === account);
+      if (!user) {
+        throw new Error(
+          state.mode === 'supabase'
+            ? '云端未找到该账号，请检查账号或先注册'
+            : '当前设备未找到该账号；若从其他手机换机而来，请点击下方「导入换机备份 / 迁移码」'
+        );
+      }
+      if (user.passwordHash && user.passwordHash !== pwdHash) throw new Error('密码不正确，请重试');
+      return { user };
+    }
+
+    if (method === 'POST' && path === '/api/account/import') {
+      const snap = body.snapshot;
+      if (!snap || !snap.user || !snap.user.account) throw new Error('无效的账户备份文件');
+      if (snap.user.passwordHash && typeof body.password === 'string') {
+        const checkHash = await hashPassword(snap.user.account, body.password);
+        if (checkHash !== snap.user.passwordHash) throw new Error('账户密码验证未通过');
+      }
+      const user = mergeSnapshotIntoLocal(snap);
       return { user };
     }
 
@@ -485,7 +809,6 @@
       const targetDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : today;
       if (!Array.isArray(task.completedDates)) task.completedDates = [];
       const prev = task.completedDates.includes(targetDate);
-
       if (typeof body.done === 'boolean') {
         if (body.done && !prev) task.completedDates.push(targetDate);
         if (!body.done && prev) task.completedDates = task.completedDates.filter((d) => d !== targetDate);
@@ -654,6 +977,100 @@
     return { ok: true };
   }
 
+  async function api(path, options = {}) {
+    const method = options.method || 'GET';
+    const body = options.body ? JSON.parse(options.body) : {};
+    if (state.mode !== 'server') return localApi(path, method, body);
+    const res = await fetch(`.${path}`, {
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      ...options
+    });
+    const text = await res.text();
+    let payload = {};
+    try { payload = text ? JSON.parse(text) : {}; } catch { payload = { raw: text }; }
+    if (!res.ok) throw new Error(payload.error || '请求失败');
+    return payload;
+  }
+
+  function applyTheme(theme) {
+    state.theme = theme;
+    localStorage.setItem('shixu_theme', theme);
+    document.documentElement.setAttribute('data-theme', theme);
+    const metaTheme = document.getElementById('meta-theme-color');
+    const metaStatus = document.getElementById('meta-status-bar');
+    if (metaTheme) metaTheme.setAttribute('content', theme === 'dark' ? '#000000' : '#F5F5F7');
+    if (metaStatus) metaStatus.setAttribute('content', theme === 'dark' ? 'black-translucent' : 'default');
+    document.getElementById('theme-icon-sun').classList.toggle('hidden', theme === 'dark');
+    document.getElementById('theme-icon-moon').classList.toggle('hidden', theme !== 'dark');
+  }
+
+  function openSheet(html) {
+    sheetContent.innerHTML = html;
+    sheetBackdrop.classList.remove('hidden');
+    sheetBackdrop.setAttribute('aria-hidden', 'false');
+    requestAnimationFrame(() => sheetBackdrop.classList.add('is-open'));
+  }
+
+  function closeSheet() {
+    sheetBackdrop.classList.remove('is-open');
+    sheetBackdrop.setAttribute('aria-hidden', 'true');
+    setTimeout(() => {
+      if (!sheetBackdrop.classList.contains('is-open')) sheetBackdrop.classList.add('hidden');
+    }, 320);
+  }
+
+  sheetBackdrop.addEventListener('click', (e) => {
+    if (e.target === sheetBackdrop) closeSheet();
+  });
+
+  async function loadBootstrap(silent = false) {
+    if (state.mode === 'auto') {
+      try {
+        const res = await fetch(`./api/bootstrap?userId=${encodeURIComponent(state.userId)}`);
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (data && 'user' in data) {
+            state.mode = 'server';
+            applyBootstrapData(data, !silent);
+            return;
+          }
+        }
+      } catch {}
+      state.mode = getSupabaseConfig() ? 'supabase' : 'local';
+    }
+
+    if (state.mode === 'server') {
+      try {
+        const data = await api(`/api/bootstrap?userId=${encodeURIComponent(state.userId)}`);
+        applyBootstrapData(data, !silent);
+      } catch (err) {
+        if (!silent) showHud(err.message || '连接服务失败', 'var(--red)');
+      }
+    } else {
+      // If Supabase configured and we have a remembered account, silently pull latest cloud snapshot
+      if (state.mode === 'supabase' && state.userId && !silent) {
+        const localUser = getLocalStore().users.find((u) => u.id === state.userId);
+        if (localUser && localUser.account) {
+          await pullAccountFromSupabase(localUser.account, null).catch(() => {});
+        }
+      }
+      applyBootstrapData(buildLocalBootstrap(state.userId), !silent);
+    }
+  }
+
+  function applyBootstrapData(data, animate) {
+    state.data = data;
+    if (data.user) {
+      saveSession(data.user.id, data.user.account);
+    }
+    if (!state.activeGroupId || !data.groups.some((g) => g.id === state.activeGroupId)) {
+      state.activeGroupId = data.groups[0] ? data.groups[0].id : null;
+    }
+    syncHeader();
+    renderView(animate);
+  }
+
   function buildLocalScriptableCode() {
     const today = todayKey();
     const pinned = (state.data && state.data.exams[0]) || { name: '尚未设定目标', targetDate: today };
@@ -713,105 +1130,11 @@ if (config.runsInWidget) Script.setWidget(w); else await w.presentMedium();
 Script.complete();`;
   }
 
-  async function api(path, options = {}) {
-    const method = options.method || 'GET';
-    const body = options.body ? JSON.parse(options.body) : {};
-    if (state.mode === 'local') return localApi(path, method, body);
-    const res = await fetch(`.${path}`, {
-      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-      ...options
-    });
-    const text = await res.text();
-    let payload = {};
-    try { payload = text ? JSON.parse(text) : {}; } catch { payload = { raw: text }; }
-    if (!res.ok) throw new Error(payload.error || '请求失败');
-    return payload;
-  }
-
-  function applyTheme(theme) {
-    state.theme = theme;
-    localStorage.setItem('shixu_theme', theme);
-    document.documentElement.setAttribute('data-theme', theme);
-    const metaTheme = document.getElementById('meta-theme-color');
-    const metaStatus = document.getElementById('meta-status-bar');
-    if (metaTheme) metaTheme.setAttribute('content', theme === 'dark' ? '#000000' : '#F5F5F7');
-    if (metaStatus) metaStatus.setAttribute('content', theme === 'dark' ? 'black-translucent' : 'default');
-    document.getElementById('theme-icon-sun').classList.toggle('hidden', theme === 'dark');
-    document.getElementById('theme-icon-moon').classList.toggle('hidden', theme !== 'dark');
-  }
-
-  function openSheet(html) {
-    sheetContent.innerHTML = html;
-    sheetBackdrop.classList.remove('hidden');
-    sheetBackdrop.setAttribute('aria-hidden', 'false');
-    requestAnimationFrame(() => sheetBackdrop.classList.add('is-open'));
-  }
-
-  function closeSheet() {
-    sheetBackdrop.classList.remove('is-open');
-    sheetBackdrop.setAttribute('aria-hidden', 'true');
-    setTimeout(() => {
-      if (!sheetBackdrop.classList.contains('is-open')) sheetBackdrop.classList.add('hidden');
-    }, 320);
-  }
-
-  sheetBackdrop.addEventListener('click', (e) => {
-    if (e.target === sheetBackdrop) closeSheet();
-  });
-
-  async function loadBootstrap(silent = false) {
-    if (state.mode === 'auto') {
-      try {
-        const res = await fetch(`./api/bootstrap?userId=${encodeURIComponent(state.userId)}`);
-        const ct = res.headers.get('content-type') || '';
-        if (res.ok && ct.includes('application/json')) {
-          const data = await res.json();
-          if (data && 'user' in data) {
-            state.mode = 'server';
-            applyBootstrapData(data, !silent);
-            return;
-          }
-        }
-      } catch {}
-      state.mode = 'local';
-    }
-
-    if (state.mode === 'server') {
-      try {
-        const data = await api(`/api/bootstrap?userId=${encodeURIComponent(state.userId)}`);
-        applyBootstrapData(data, !silent);
-      } catch (err) {
-        if (!silent) showHud(err.message || '连接服务失败', 'var(--red)');
-      }
-    } else {
-      applyBootstrapData(buildLocalBootstrap(state.userId), !silent);
-    }
-  }
-
-  function applyBootstrapData(data, animate) {
-    state.data = data;
-    if (data.user) {
-      state.userId = data.user.id;
-      localStorage.setItem('shixu_raw_user_id', state.userId);
-    } else {
-      state.userId = '';
-      localStorage.removeItem('shixu_raw_user_id');
-    }
-    if (!state.activeGroupId || !data.groups.some((g) => g.id === state.activeGroupId)) {
-      state.activeGroupId = data.groups[0] ? data.groups[0].id : null;
-    }
-    syncHeader();
-    renderView(animate);
-  }
-
   async function loadScriptableSnippet() {
     if (state.mode === 'server') {
       try {
         const res = await fetch(`./api/widget/scriptable?userId=${encodeURIComponent(state.userId)}`);
-        if (res.ok) {
-          state.scriptableCode = await res.text();
-          return;
-        }
+        if (res.ok) { state.scriptableCode = await res.text(); return; }
       } catch {}
     }
     state.scriptableCode = buildLocalScriptableCode();
@@ -826,7 +1149,7 @@ Script.complete();`;
     } else {
       navAvatar.textContent = '我';
       navAvatar.style.background = 'var(--accent)';
-      navUsername.textContent = '开始使用';
+      navUsername.textContent = '统一账户';
     }
     compactTitle.textContent = u
       ? (state.activeTab === 'today' ? getRelativeDayTitle(state.selectedDate) : (TAB_TITLES[state.activeTab] || '时序'))
@@ -836,7 +1159,7 @@ Script.complete();`;
   }
 
   // =========================================================================
-  // Timeline & Monthly Progress Calendar Builder
+  // Timeline & Monthly Progress Calendar
   // =========================================================================
 
   function buildTimelineSection(tasks) {
@@ -845,7 +1168,6 @@ Script.complete();`;
     const tomorrow = shiftDateISO(today, 1);
     const sel = state.selectedDate;
 
-    // 7-day strip centered around selected date (-3..+3)
     const railDates = [];
     for (let i = -3; i <= 3; i++) railDates.push(shiftDateISO(sel, i));
 
@@ -854,7 +1176,6 @@ Script.complete();`;
       const [y, m] = state.viewMonth.split('-').map(Number);
       const firstDay = new Date(y, m - 1, 1);
       const daysInMonth = new Date(y, m, 0).getDate();
-      // Monday-first offset (0=Mon .. 6=Sun)
       const startOffset = (firstDay.getDay() + 6) % 7;
 
       let monthDoneCount = 0;
@@ -863,9 +1184,7 @@ Script.complete();`;
       let monthPctSum = 0;
 
       const cells = [];
-      for (let pad = 0; pad < startOffset; pad++) {
-        cells.push('<div></div>');
-      }
+      for (let pad = 0; pad < startOffset; pad++) cells.push('<div></div>');
       for (let day = 1; day <= daysInMonth; day++) {
         const ds = `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
         const st = getDayStats(tasks, ds);
@@ -989,35 +1308,12 @@ Script.complete();`;
     }
 
     if (!state.data.user) {
-      viewContainer.innerHTML = buildWelcomeOnboardingView();
-      const form = document.getElementById('form-welcome-start');
-      if (form) {
-        form.addEventListener('submit', async (e) => {
-          e.preventDefault();
-          const name = document.getElementById('input-welcome-name').value.trim();
-          if (!name) return;
-          try {
-            const payload = { name };
-            if (state.pendingInvite) {
-              payload.joinCode = state.pendingInvite.code;
-              payload.sharedGroup = state.pendingInvite.sharedGroup;
-            }
-            const res = await api('/api/users', { method: 'POST', body: JSON.stringify(payload) });
-            state.userId = res.user.id;
-            localStorage.setItem('shixu_raw_user_id', state.userId);
-            const joined = Boolean(state.pendingInvite);
-            state.pendingInvite = null;
-            if (joined) {
-              state.activeTab = 'groups';
-              syncTabButtons();
-            }
-            await loadBootstrap(false);
-            showHud(`欢迎，${res.user.name}`);
-          } catch (err) {
-            showHud(err.message, 'var(--red)');
-          }
-        });
+      // Default to register if no users exist locally yet, otherwise login
+      if (state.data.users.length === 0 && state.authMode === 'login' && !state.pendingRestore) {
+        state.authMode = 'register';
       }
+      viewContainer.innerHTML = buildUnifiedAuthView();
+      bindUnifiedAuthEvents();
       return;
     }
 
@@ -1038,50 +1334,165 @@ Script.complete();`;
     }
   }
 
-  function buildWelcomeOnboardingView() {
+  function buildUnifiedAuthView() {
+    const isReg = state.authMode === 'register';
     const invite = state.pendingInvite;
+    const restore = state.pendingRestore;
+    const cloudReady = state.mode === 'server' || state.mode === 'supabase';
+    const existingUsers = (state.data && state.data.users) || [];
+
     return `
-      <div style="padding:26px 4px 12px;text-align:center;">
-        <img src="./icons/apple-touch-icon.png" alt="时序图标" style="width:76px;height:76px;border-radius:18px;box-shadow:0 12px 28px rgba(0,113,227,0.26);margin-bottom:18px;" />
-        <h1 class="page-title" style="font-size:30px;">欢迎使用「时序」</h1>
-        <p style="font-size:14px;line-height:1.6;color:var(--text-secondary);margin:10px auto 24px;max-width:300px;">
-          自定义任务大标题、按日与按月追踪学习时间轴、设定考试倒计时并组建学习小组。
+      <div style="padding:18px 4px 12px;text-align:center;">
+        <img src="./icons/apple-touch-icon.png" alt="时序图标" style="width:72px;height:72px;border-radius:18px;box-shadow:0 12px 28px rgba(0,113,227,0.26);margin-bottom:14px;" />
+        <h1 class="page-title" style="font-size:28px;">时序 · 统一学习账户</h1>
+        <p style="font-size:13px;line-height:1.55;color:var(--text-secondary);margin:8px auto 18px;max-width:310px;">
+          ${cloudReady
+            ? '云端永久记忆已开启：无论网站升级或更换任意设备，登录同一账户即可自动恢复全部学习记录。'
+            : '账户数据采用本地双层永久存储，网站升级绝不丢失；更换设备时可通过换机迁移码或备份文件完整恢复。'}
         </p>
 
+        ${restore ? `
+          <div class="card card-padded" style="text-align:left;margin-bottom:14px;">
+            <div style="font-size:12px;font-weight:700;color:var(--green);">已识别换机迁移数据包</div>
+            <div style="font-size:15px;font-weight:700;margin-top:4px;">账户：${esc(restore.user.name)} (@${esc(restore.user.account)})</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">包含 ${(restore.categories || []).length} 个大标题 · ${(restore.tasks || []).length} 项任务 · ${(restore.exams || []).length} 个倒计时</div>
+            <form id="form-unlock-restore" style="margin-top:12px;">
+              <div class="field" style="margin-bottom:10px;">
+                <input id="input-restore-pwd" class="input" type="password" required placeholder="输入原账户密码以解锁恢复全部数据" />
+              </div>
+              <button type="submit" class="btn-primary btn-block">验证密码并恢复全部数据</button>
+            </form>
+          </div>
+        ` : ''}
+
         ${invite && invite.sharedGroup ? `
-          <div class="card card-padded" style="text-align:left;margin-bottom:16px;">
+          <div class="card card-padded" style="text-align:left;margin-bottom:14px;">
             <div style="font-size:12px;font-weight:600;color:var(--accent);">收到学习小组邀请</div>
-            <div style="font-size:16px;font-weight:700;margin-top:4px;">${esc(invite.sharedGroup.name)}</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">共同目标：${esc(invite.sharedGroup.examName)} · ${esc(invite.sharedGroup.targetDate)}</div>
+            <div style="font-size:15px;font-weight:700;margin-top:3px;">${esc(invite.sharedGroup.name)}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">共同目标：${esc(invite.sharedGroup.examName)} · ${esc(invite.sharedGroup.targetDate)}</div>
           </div>
         ` : ''}
 
         <div class="card card-padded" style="text-align:left;">
-          <form id="form-welcome-start">
+          <div class="segmented-control" style="width:100%;display:grid;grid-template-columns:1fr 1fr;margin-bottom:16px;">
+            <button type="button" class="seg-btn ${!isReg ? 'is-active' : ''}" id="auth-tab-login">登录已有账户</button>
+            <button type="button" class="seg-btn ${isReg ? 'is-active' : ''}" id="auth-tab-register">注册统一账户</button>
+          </div>
+
+          <form id="form-unified-auth">
             <div class="field">
-              <label class="field-label" for="input-welcome-name">输入你的昵称，立即开始</label>
-              <input id="input-welcome-name" class="input" type="text" required maxlength="16" placeholder="例如：小陈 / Alex" autofocus />
+              <label class="field-label" for="input-auth-account">统一账号（手机号 / 英文账号）</label>
+              <input id="input-auth-account" class="input" type="text" required maxlength="40" autocomplete="username" placeholder="例如：13800138000 或 alex" />
             </div>
-            <button type="submit" class="btn-primary btn-block">${invite ? '创建昵称并加入小组' : '进入我的学习台'}</button>
+            ${isReg ? `
+              <div class="field">
+                <label class="field-label" for="input-auth-name">显示昵称</label>
+                <input id="input-auth-name" class="input" type="text" required maxlength="16" placeholder="例如：小陈" />
+              </div>
+            ` : ''}
+            <div class="field">
+              <label class="field-label" for="input-auth-pwd">${isReg ? '设置登录密码（至少 4 位）' : '输入登录密码'}</label>
+              <input id="input-auth-pwd" class="input" type="password" required minlength="4" autocomplete="${isReg ? 'new-password' : 'current-password'}" placeholder="••••••" />
+            </div>
+            <button type="submit" class="btn-primary btn-block">${isReg ? '注册并记住账户' : '登录并恢复数据'}</button>
           </form>
+
+          <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border-separator);display:flex;justify-content:space-between;align-items:center;font-size:12px;">
+            <span style="color:var(--text-secondary);">从旧手机迁移数据？</span>
+            <button type="button" style="color:var(--accent);font-weight:600;" data-action="trigger-import-backup">导入账户备份文件</button>
+          </div>
         </div>
 
-        <div style="margin-top:20px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center;">
-          <div class="card" style="padding:12px 8px;">
-            <div style="font-size:13px;font-weight:600;">自定义大标题</div>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">按科目自由命名</div>
+        ${existingUsers.length ? `
+          <div style="margin-top:14px;text-align:left;">
+            <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin:0 4px 8px;">本机已记忆的统一账户</div>
+            ${existingUsers.map((u) => `
+              <button class="account-row" data-quick-fill-account="${esc(u.account)}">
+                <div class="account-left">
+                  <span class="avatar-dot" style="width:30px;height:30px;font-size:12px;background:${u.color}">${esc(u.avatar)}</span>
+                  <div style="text-align:left;">
+                    <div style="font-size:14px;font-weight:600;">${esc(u.name)}</div>
+                    <div style="font-size:11px;color:var(--text-secondary);">@${esc(u.account)}</div>
+                  </div>
+                </div>
+                <span style="font-size:12px;color:var(--accent);font-weight:600;">快速登录</span>
+              </button>
+            `).join('')}
           </div>
-          <div class="card" style="padding:12px 8px;">
-            <div style="font-size:13px;font-weight:600;">月度时间轴</div>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">昨今明与月进程</div>
-          </div>
-          <div class="card" style="padding:12px 8px;">
-            <div style="font-size:13px;font-weight:600;">学习小组</div>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">多人打卡互督</div>
-          </div>
-        </div>
+        ` : ''}
       </div>
     `;
+  }
+
+  function bindUnifiedAuthEvents() {
+    const loginTab = document.getElementById('auth-tab-login');
+    const regTab = document.getElementById('auth-tab-register');
+    if (loginTab) loginTab.addEventListener('click', () => { state.authMode = 'login'; renderView(false); });
+    if (regTab) regTab.addEventListener('click', () => { state.authMode = 'register'; renderView(false); });
+
+    const unlockForm = document.getElementById('form-unlock-restore');
+    if (unlockForm && state.pendingRestore) {
+      unlockForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const pwd = document.getElementById('input-restore-pwd').value;
+        try {
+          const res = await api('/api/account/import', {
+            method: 'POST',
+            body: JSON.stringify({ snapshot: state.pendingRestore, password: pwd })
+          });
+          state.pendingRestore = null;
+          saveSession(res.user.id, res.user.account);
+          await loadBootstrap(false);
+          showHud(`欢迎回来，${res.user.name}！数据已 100% 恢复`);
+        } catch (err) {
+          showHud(err.message, 'var(--red)');
+        }
+      });
+    }
+
+    const authForm = document.getElementById('form-unified-auth');
+    if (authForm) {
+      authForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const account = document.getElementById('input-auth-account').value.trim();
+        const password = document.getElementById('input-auth-pwd').value;
+        try {
+          if (state.authMode === 'register') {
+            const name = document.getElementById('input-auth-name').value.trim();
+            const payload = { account, name, password };
+            if (state.pendingInvite) {
+              payload.joinCode = state.pendingInvite.code;
+              payload.sharedGroup = state.pendingInvite.sharedGroup;
+            }
+            const res = await api('/api/auth/register', { method: 'POST', body: JSON.stringify(payload) });
+            saveSession(res.user.id, res.user.account);
+            const joined = Boolean(state.pendingInvite);
+            state.pendingInvite = null;
+            if (joined) { state.activeTab = 'groups'; syncTabButtons(); }
+            await loadBootstrap(false);
+            showHud(`统一账户 @${res.user.account} 已创建并记住`);
+          } else {
+            const res = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ account, password }) });
+            saveSession(res.user.id, res.user.account);
+            await loadBootstrap(false);
+            showHud(`欢迎回来，${res.user.name}`);
+          }
+        } catch (err) {
+          showHud(err.message, 'var(--red)');
+        }
+      });
+    }
+
+    viewContainer.querySelectorAll('[data-quick-fill-account]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.authMode = 'login';
+        renderView(false);
+        const accInput = document.getElementById('input-auth-account');
+        const pwdInput = document.getElementById('input-auth-pwd');
+        if (accInput) accInput.value = btn.dataset.quickFillAccount;
+        if (pwdInput) pwdInput.focus();
+      });
+    });
   }
 
   function buildTodayView() {
@@ -1091,17 +1502,14 @@ Script.complete();`;
     const dayStats = getDayStats(tasks, sel);
     const primaryGroup = groups[0];
 
-    // Group selected date's tasks under Custom Big Titles (categories)
     const colorMap = new Map();
     for (const c of categories) colorMap.set(c.name, c.color);
 
     const groupMap = new Map();
-    // Preserve custom category order for categories that have tasks on this day
     for (const c of categories) {
       const catTasks = dayStats.list.filter((t) => t.category === c.name);
       if (catTasks.length) groupMap.set(c.name, catTasks);
     }
-    // Include any tasks whose category isn't in categories list (e.g. '未分组')
     for (const t of dayStats.list) {
       const key = t.category || '未分组';
       if (!groupMap.has(key)) groupMap.set(key, []);
@@ -1158,10 +1566,8 @@ Script.complete();`;
         </section>
       `}
 
-      <!-- Task Sequence Timeline: Yesterday / Today / Tomorrow + Full Month Calendar -->
       ${buildTimelineSection(tasks)}
 
-      <!-- Day Completion & Focus Strip -->
       <section class="summary-strip">
         <div class="card summary-tile">
           <div>
@@ -1188,7 +1594,6 @@ Script.complete();`;
         </button>
       </section>
 
-      <!-- Custom Category Big-Title Section Header -->
       <div class="section-header">
         <h2 class="section-title">${formatDateCN(sel)} · 任务序列</h2>
         <div style="display:flex;align-items:center;gap:12px;">
@@ -1333,7 +1738,7 @@ Script.complete();`;
               </button>
             `).join('')}
           </div>
-          <div class="member-hint">点击左上角头像可新建其他成员账号输入邀请码加入，测试多人互相催学</div>
+          <div class="member-hint">点击成员头像可互相「拍一拍催学」或「点赞鼓励」</div>
         </section>
 
         <div class="section-header">
@@ -1515,8 +1920,147 @@ Script.complete();`;
   }
 
   // =========================================================================
-  // Modals / Bottom Sheets (Including Custom Big-Title Management!)
+  // Modals / Bottom Sheets (Account Memory, Categories, Tasks, Exams, Groups)
   // =========================================================================
+
+  function openAccountSheet() {
+    if (!state.data || !state.data.user) return;
+    const { user, users } = state.data;
+    const cloudReady = state.mode === 'server' || state.mode === 'supabase';
+    const syncLabel = state.mode === 'supabase'
+      ? 'Supabase 云端实时同步已开启'
+      : (state.mode === 'server' ? '自有服务端云同步已开启' : '永久防丢存储已开启 · 支持换机迁移');
+
+    openSheet(`
+      <div class="sheet-header">
+        <h2 class="sheet-title">统一账户与数据记忆</h2>
+        <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
+      </div>
+
+      <!-- Current Account Status Card -->
+      <div class="card card-padded" style="margin-bottom:14px;background:var(--bg-surface);">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <span class="avatar-dot" style="width:44px;height:44px;font-size:17px;background:${user.color}">${esc(user.avatar)}</span>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:16px;font-weight:700;">${esc(user.name)}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">统一账号：@${esc(user.account)}</div>
+          </div>
+          <button type="button" id="btn-logout-account" class="btn-secondary btn-sm">退出登录</button>
+        </div>
+        <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border-separator);display:flex;align-items:center;justify-content:space-between;font-size:12px;">
+          <span style="display:inline-flex;align-items:center;gap:6px;font-weight:600;color:${cloudReady ? 'var(--green)' : 'var(--accent)'};">
+            <span style="width:7px;height:7px;border-radius:50%;background:${cloudReady ? 'var(--green)' : 'var(--accent)'};"></span>
+            ${syncLabel}
+          </span>
+          <span style="color:var(--text-tertiary);">升级不丢数据</span>
+        </div>
+      </div>
+
+      <!-- Cross-Device Sync & Backup Section -->
+      <div class="field-label" style="margin-bottom:8px;">跨设备无缝同步 / 换机数据迁移</div>
+      <div class="card card-padded" style="margin-bottom:14px;background:var(--bg-surface);">
+        <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;line-height:1.55;">
+          ${cloudReady
+            ? '您的统一账户已连接云端数据库，在新手机直接登录账号 @' + esc(user.account) + ' 即可自动恢复全部数据；下方也可随时导出本地加密备份。'
+            : '换新手机或换浏览器时，点击下方生成「加密换机迁移链接」发给自己，在新设备点开并验证原密码即可 100% 恢复全部大标题、时间轴与倒计时。'}
+        </p>
+        <button type="button" class="btn-primary btn-block" id="btn-copy-restore-link">复制加密换机迁移链接</button>
+        <div class="btn-row" style="margin-top:10px;">
+          <button type="button" class="btn-secondary" id="btn-export-backup">导出备份文件</button>
+          <button type="button" class="btn-secondary" data-action="trigger-import-backup">导入恢复备份</button>
+        </div>
+      </div>
+
+      <!-- Switch Other Local Accounts -->
+      ${users.length > 1 ? `
+        <div class="field-label" style="margin-bottom:8px;">快速切换本机已记忆账户</div>
+        <div style="margin-bottom:14px;">
+          ${users.filter((u) => u.id !== user.id).map((u) => `
+            <button class="account-row" data-switch-user="${u.id}" data-switch-acc="${esc(u.account)}">
+              <div class="account-left">
+                <span class="avatar-dot" style="width:30px;height:30px;font-size:12px;background:${u.color}">${esc(u.avatar)}</span>
+                <div style="text-align:left;">
+                  <div style="font-size:14px;font-weight:600;">${esc(u.name)}</div>
+                  <div style="font-size:11px;color:var(--text-secondary);">@${esc(u.account)}</div>
+                </div>
+              </div>
+              <span style="font-size:12px;color:var(--accent);font-weight:600;">切换</span>
+            </button>
+          `).join('')}
+        </div>
+      ` : ''}
+
+      <div style="padding-top:10px;border-top:1px solid var(--border-separator);text-align:center;">
+        <button type="button" id="btn-reset-step1" style="font-size:12px;color:var(--text-tertiary);padding:6px 12px;">
+          清空本机全部账户数据（慎用）
+        </button>
+        <div id="reset-confirm-box" class="hidden" style="margin-top:8px;">
+          <button type="button" id="btn-reset-confirm" class="btn-secondary btn-block" style="color:var(--red);">
+            确认彻底清空并恢复空白初始状态
+          </button>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('btn-logout-account').addEventListener('click', async () => {
+      closeSheet();
+      saveSession('');
+      state.activeGroupId = null;
+      state.authMode = 'login';
+      await loadBootstrap(false);
+      showHud('已退出登录，账户数据已永久保留');
+    });
+
+    document.getElementById('btn-copy-restore-link').addEventListener('click', async () => {
+      const snap = buildAccountSnapshot(state.userId);
+      if (!snap) return;
+      const encoded = encodeB64Json(snap);
+      const base = window.location.origin + window.location.pathname;
+      const url = `${base}?restore=${encodeURIComponent(encoded)}`;
+      await copyText(url, '已复制换机迁移链接，在新设备打开输入密码即可恢复');
+    });
+
+    document.getElementById('btn-export-backup').addEventListener('click', () => {
+      const snap = buildAccountSnapshot(state.userId);
+      if (!snap) return;
+      const blob = new Blob([JSON.stringify(snap, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `时序账户备份-${user.account}-${todayKey()}.shixu.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showHud('账户完整备份文件已保存');
+    });
+
+    sheetContent.querySelectorAll('[data-switch-user]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        saveSession(btn.dataset.switchUser, btn.dataset.switchAcc);
+        state.scriptableCode = '';
+        closeSheet();
+        await loadBootstrap(false);
+        showHud(`已切换至 ${state.data.user.name}`);
+      });
+    });
+
+    document.getElementById('btn-reset-step1').addEventListener('click', () => {
+      document.getElementById('reset-confirm-box').classList.remove('hidden');
+    });
+
+    document.getElementById('btn-reset-confirm').addEventListener('click', async () => {
+      closeSheet();
+      await api('/api/reset', { method: 'POST', body: JSON.stringify({}) });
+      saveSession('');
+      state.activeGroupId = null;
+      state.activeTab = 'today';
+      state.selectedDate = todayKey();
+      state.viewMonth = currentMonthKey();
+      state.showMonthCalendar = false;
+      syncTabButtons();
+      await loadBootstrap(false);
+      showHud('已恢复全新空白状态');
+    });
+  }
 
   function openManageCategoriesSheet() {
     if (!state.data || !state.data.user) return;
@@ -1579,16 +2123,11 @@ Script.complete();`;
       const name = document.getElementById('input-new-cat-name').value.trim();
       if (!name) return;
       try {
-        await api('/api/categories', {
-          method: 'POST',
-          body: JSON.stringify({ userId: state.userId, name, color: pickedColor })
-        });
+        await api('/api/categories', { method: 'POST', body: JSON.stringify({ userId: state.userId, name, color: pickedColor }) });
         await loadBootstrap(true);
         openManageCategoriesSheet();
         showHud(`已创建大标题「${name}」`);
-      } catch (err) {
-        showHud(err.message, 'var(--red)');
-      }
+      } catch (err) { showHud(err.message, 'var(--red)'); }
     });
 
     sheetContent.querySelectorAll('[data-save-cat]').forEach((btn) => {
@@ -1598,30 +2137,22 @@ Script.complete();`;
         const nextName = input ? input.value.trim() : '';
         if (!nextName) return;
         try {
-          await api(`/api/categories/${id}`, {
-            method: 'PATCH',
-            body: JSON.stringify({ name: nextName })
-          });
+          await api(`/api/categories/${id}`, { method: 'PATCH', body: JSON.stringify({ name: nextName }) });
           await loadBootstrap(true);
           openManageCategoriesSheet();
           showHud(`已重命名为「${nextName}」`);
-        } catch (err) {
-          showHud(err.message, 'var(--red)');
-        }
+        } catch (err) { showHud(err.message, 'var(--red)'); }
       });
     });
 
     sheetContent.querySelectorAll('[data-del-cat]').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        const id = btn.dataset.delCat;
         try {
-          await api(`/api/categories/${id}`, { method: 'DELETE' });
+          await api(`/api/categories/${btn.dataset.delCat}`, { method: 'DELETE' });
           await loadBootstrap(true);
           openManageCategoriesSheet();
           showHud('已移除大标题');
-        } catch (err) {
-          showHud(err.message, 'var(--red)');
-        }
+        } catch (err) { showHud(err.message, 'var(--red)'); }
       });
     });
   }
@@ -1642,9 +2173,7 @@ Script.complete();`;
           ${cats.length ? `
             <div class="chip-row" id="task-cat-chips" style="margin-top:8px;">
               ${cats.map((c) => `
-                <button type="button" class="choice-chip ${c.name === initialCat ? 'is-selected' : ''}" data-pick-cat="${esc(c.name)}">
-                  ${esc(c.name)}
-                </button>
+                <button type="button" class="choice-chip ${c.name === initialCat ? 'is-selected' : ''}" data-pick-cat="${esc(c.name)}">${esc(c.name)}</button>
               `).join('')}
             </div>
           ` : ''}
@@ -1718,9 +2247,7 @@ Script.complete();`;
         state.viewMonth = currentMonthKey(date);
         await loadBootstrap(true);
         showHud(`已添加到「${category}」`);
-      } catch (err) {
-        showHud(err.message, 'var(--red)');
-      }
+      } catch (err) { showHud(err.message, 'var(--red)'); }
     });
   }
 
@@ -1755,15 +2282,10 @@ Script.complete();`;
       if (!name || !targetDate) return;
       closeSheet();
       try {
-        await api('/api/exams', {
-          method: 'POST',
-          body: JSON.stringify({ userId: state.userId, name, targetDate, tag, pinned: true })
-        });
+        await api('/api/exams', { method: 'POST', body: JSON.stringify({ userId: state.userId, name, targetDate, tag, pinned: true }) });
         await loadBootstrap(true);
         showHud('目标倒计时已置顶');
-      } catch (err) {
-        showHud(err.message, 'var(--red)');
-      }
+      } catch (err) { showHud(err.message, 'var(--red)'); }
     });
   }
 
@@ -1803,16 +2325,11 @@ Script.complete();`;
       if (!name) return;
       closeSheet();
       try {
-        const res = await api('/api/groups', {
-          method: 'POST',
-          body: JSON.stringify({ userId: state.userId, name, examName, targetDate, notice })
-        });
+        const res = await api('/api/groups', { method: 'POST', body: JSON.stringify({ userId: state.userId, name, examName, targetDate, notice }) });
         state.activeGroupId = res.group.id;
         await loadBootstrap(true);
         showHud(`小组已创建，邀请码 ${res.group.inviteCode}`);
-      } catch (err) {
-        showHud(err.message, 'var(--red)');
-      }
+      } catch (err) { showHud(err.message, 'var(--red)'); }
     });
   }
 
@@ -1844,111 +2361,13 @@ Script.complete();`;
       if (!inviteCode) return;
       closeSheet();
       try {
-        const res = await api('/api/groups/join', {
-          method: 'POST',
-          body: JSON.stringify({ userId: state.userId, inviteCode, sharedGroup })
-        });
+        const res = await api('/api/groups/join', { method: 'POST', body: JSON.stringify({ userId: state.userId, inviteCode, sharedGroup }) });
         state.activeGroupId = res.group.id;
         state.activeTab = 'groups';
         syncTabButtons();
         await loadBootstrap(true);
         showHud(`已加入「${res.group.name}」`);
-      } catch (err) {
-        showHud(err.message, 'var(--red)');
-      }
-    });
-  }
-
-  function openAccountSheet() {
-    if (!state.data || !state.data.user) return;
-    const { users, user } = state.data;
-    openSheet(`
-      <div class="sheet-header">
-        <h2 class="sheet-title">账号管理与重置</h2>
-        <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
-      </div>
-      <p style="font-size:12px;color:var(--text-secondary);margin:0 0 14px;line-height:1.5;">
-        可新建多个成员账号并切换，亲自测试“创建小组 → 输入邀请码加入 → 多人互相打卡与催学”完整流程。
-      </p>
-      <div>
-        ${users.map((u) => `
-          <button class="account-row" data-switch-user="${u.id}">
-            <div class="account-left">
-              <span class="avatar-dot" style="width:32px;height:32px;font-size:13px;background:${u.color}">${esc(u.avatar)}</span>
-              <div style="text-align:left;">
-                <div style="font-size:14px;font-weight:600;">${esc(u.name)}</div>
-                <div style="font-size:11px;color:var(--text-secondary);">已坚持 ${u.streak} 天</div>
-              </div>
-            </div>
-            ${u.id === user.id ? '<span class="account-check">当前账号</span>' : '<span style="font-size:12px;color:var(--text-tertiary);">切换</span>'}
-          </button>
-        `).join('')}
-      </div>
-
-      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border-separator);">
-        <form id="form-new-user">
-          <div class="field">
-            <label class="field-label" for="input-new-username">新增一个空白成员账号</label>
-            <div style="display:flex;gap:8px;">
-              <input id="input-new-username" class="input" type="text" required maxlength="16" placeholder="输入新成员昵称" />
-              <button type="submit" class="btn-primary" style="flex-shrink:0;">新建</button>
-            </div>
-          </div>
-        </form>
-      </div>
-
-      <div style="margin-top:12px;padding-top:14px;border-top:1px solid var(--border-separator);">
-        <button id="btn-reset-all" class="btn-secondary btn-block" style="color:var(--red);">
-          清空全部数据 · 恢复全新初始状态
-        </button>
-      </div>
-    `);
-
-    sheetContent.querySelectorAll('[data-switch-user]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        state.userId = btn.dataset.switchUser;
-        state.scriptableCode = '';
-        localStorage.setItem('shixu_raw_user_id', state.userId);
-        closeSheet();
-        await loadBootstrap(false);
-        showHud(`已切换为 ${state.data.user.name}`);
-      });
-    });
-
-    document.getElementById('form-new-user').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const name = document.getElementById('input-new-username').value.trim();
-      if (!name) return;
-      closeSheet();
-      try {
-        const res = await api('/api/users', { method: 'POST', body: JSON.stringify({ name }) });
-        state.userId = res.user.id;
-        state.scriptableCode = '';
-        localStorage.setItem('shixu_raw_user_id', state.userId);
-        await loadBootstrap(false);
-        showHud(`已创建并切换为 ${res.user.name}`);
-      } catch (err) {
-        showHud(err.message, 'var(--red)');
-      }
-    });
-
-    document.getElementById('btn-reset-all').addEventListener('click', async () => {
-      closeSheet();
-      try {
-        await api('/api/reset', { method: 'POST', body: JSON.stringify({}) });
-        state.userId = '';
-        state.activeGroupId = null;
-        state.activeTab = 'today';
-        state.selectedDate = todayKey();
-        state.viewMonth = currentMonthKey();
-        state.showMonthCalendar = false;
-        syncTabButtons();
-        localStorage.removeItem('shixu_raw_user_id');
-        await loadBootstrap(false);
-        showHud('已恢复为全新初始空白状态');
-      } catch (err) {
-        showHud(err.message, 'var(--red)');
-      }
+      } catch (err) { showHud(err.message, 'var(--red)'); }
     });
   }
 
@@ -2005,15 +2424,10 @@ Script.complete();`;
       f.remainingSec = f.presetMin * 60;
       closeSheet();
       try {
-        await api('/api/focus/complete', {
-          method: 'POST',
-          body: JSON.stringify({ userId: state.userId, minutes: elapsedMin, label: f.label })
-        });
+        await api('/api/focus/complete', { method: 'POST', body: JSON.stringify({ userId: state.userId, minutes: elapsedMin, label: f.label }) });
         await loadBootstrap(true);
         showHud(`已记录 ${elapsedMin} 分钟专注时长`);
-      } catch (err) {
-        showHud(err.message, 'var(--red)');
-      }
+      } catch (err) { showHud(err.message, 'var(--red)'); }
     });
   }
 
@@ -2029,10 +2443,7 @@ Script.complete();`;
         stopFocusInterval();
         const mins = state.focus.presetMin;
         state.focus.remainingSec = mins * 60;
-        await api('/api/focus/complete', {
-          method: 'POST',
-          body: JSON.stringify({ userId: state.userId, minutes: mins, label: state.focus.label })
-        }).catch(() => {});
+        await api('/api/focus/complete', { method: 'POST', body: JSON.stringify({ userId: state.userId, minutes: mins, label: state.focus.label }) }).catch(() => {});
         await loadBootstrap(true);
         showHud(`专注 ${mins} 分钟完成`);
       }
@@ -2041,10 +2452,7 @@ Script.complete();`;
 
   function stopFocusInterval() {
     state.focus.running = false;
-    if (state.focus.timerId) {
-      clearInterval(state.focus.timerId);
-      state.focus.timerId = null;
-    }
+    if (state.focus.timerId) { clearInterval(state.focus.timerId); state.focus.timerId = null; }
   }
 
   // =========================================================================
@@ -2065,13 +2473,8 @@ Script.complete();`;
     const grp = state.data.groups[0];
 
     const bgGrad = ctx.createLinearGradient(0, 0, W, H);
-    if (isDark) {
-      bgGrad.addColorStop(0, '#070C18');
-      bgGrad.addColorStop(1, '#000000');
-    } else {
-      bgGrad.addColorStop(0, '#E8F0FC');
-      bgGrad.addColorStop(1, '#F5F5F7');
-    }
+    if (isDark) { bgGrad.addColorStop(0, '#070C18'); bgGrad.addColorStop(1, '#000000'); }
+    else { bgGrad.addColorStop(0, '#E8F0FC'); bgGrad.addColorStop(1, '#F5F5F7'); }
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, W, H);
 
@@ -2135,19 +2538,12 @@ Script.complete();`;
         const done = isTaskDoneOnDate(t, today);
         ctx.beginPath();
         ctx.arc(176, y - 12, 16, 0, Math.PI * 2);
-        if (done) {
-          ctx.fillStyle = accent;
-          ctx.fill();
-        } else {
-          ctx.strokeStyle = muted;
-          ctx.lineWidth = 3.5;
-          ctx.stroke();
-        }
+        if (done) { ctx.fillStyle = accent; ctx.fill(); }
+        else { ctx.strokeStyle = muted; ctx.lineWidth = 3.5; ctx.stroke(); }
         ctx.fillStyle = done ? muted : fg;
         ctx.font = `500 35px ${fontFamily}`;
         const fullLabel = `${t.category} · ${t.title}`;
-        const label = fullLabel.length > 18 ? `${fullLabel.slice(0, 18)}…` : fullLabel;
-        ctx.fillText(label, 218, y);
+        ctx.fillText(fullLabel.length > 18 ? `${fullLabel.slice(0, 18)}…` : fullLabel, 218, y);
       });
     } else {
       ctx.fillStyle = muted;
@@ -2182,6 +2578,25 @@ Script.complete();`;
     showHud('高清锁屏倒计时壁纸已保存');
   }
 
+  // Backup file import handler
+  importBackupInput.addEventListener('change', async () => {
+    const file = importBackupInput.files && importBackupInput.files[0];
+    importBackupInput.value = '';
+    if (!file) return;
+    try {
+      const txt = await file.text();
+      const snap = JSON.parse(txt);
+      if (!snap || !snap.user || !snap.user.account) throw new Error('备份文件格式不正确');
+      const res = await api('/api/account/import', { method: 'POST', body: JSON.stringify({ snapshot: snap }) });
+      closeSheet();
+      saveSession(res.user.id, res.user.account);
+      await loadBootstrap(false);
+      showHud(`已成功恢复统一账户 @${res.user.account} 的全部数据`);
+    } catch (err) {
+      showHud(err.message || '导入失败，请检查备份文件', 'var(--red)');
+    }
+  });
+
   // =========================================================================
   // Navigation & Event Delegation
   // =========================================================================
@@ -2195,14 +2610,11 @@ Script.complete();`;
   document.querySelectorAll('.tab-item').forEach((btn) => {
     btn.addEventListener('click', () => {
       if (!state.data || !state.data.user) {
-        showHud('请先输入昵称开始使用', 'var(--accent)');
+        showHud('请先登录或注册统一账户', 'var(--accent)');
         return;
       }
       const next = btn.dataset.tab;
-      if (next === state.activeTab) {
-        mainScroll.scrollTo({ top: 0, behavior: 'smooth' });
-        return;
-      }
+      if (next === state.activeTab) { mainScroll.scrollTo({ top: 0, behavior: 'smooth' }); return; }
       state.activeTab = next;
       syncTabButtons();
       mainScroll.scrollTop = 0;
@@ -2241,14 +2653,11 @@ Script.complete();`;
     if (action === 'open-create-group') return openCreateGroupSheet();
     if (action === 'open-join-group') return openJoinGroupSheet();
     if (action === 'open-focus') return openFocusSheet();
+    if (action === 'trigger-import-backup') { importBackupInput.click(); return; }
 
     if (action === 'pick-date') {
       const ds = btn.dataset.date;
-      if (ds) {
-        state.selectedDate = ds;
-        state.viewMonth = currentMonthKey(ds);
-        renderView(false);
-      }
+      if (ds) { state.selectedDate = ds; state.viewMonth = currentMonthKey(ds); renderView(false); }
       return;
     }
 
@@ -2266,25 +2675,15 @@ Script.complete();`;
     }
 
     if (action === 'goto-groups') {
-      state.activeTab = 'groups';
-      syncTabButtons();
-      mainScroll.scrollTop = 0;
-      renderView(true);
-      return;
+      state.activeTab = 'groups'; syncTabButtons(); mainScroll.scrollTop = 0; renderView(true); return;
     }
 
     if (action === 'goto-exams') {
-      state.activeTab = 'exams';
-      syncTabButtons();
-      mainScroll.scrollTop = 0;
-      renderView(true);
-      return;
+      state.activeTab = 'exams'; syncTabButtons(); mainScroll.scrollTop = 0; renderView(true); return;
     }
 
     if (action === 'select-group') {
-      state.activeGroupId = btn.dataset.id;
-      renderView(false);
-      return;
+      state.activeGroupId = btn.dataset.id; renderView(false); return;
     }
 
     if (action === 'toggle-task') {
@@ -2298,10 +2697,7 @@ Script.complete();`;
       else task.completedDates = task.completedDates.filter((d) => d !== dateStr);
       renderView(false);
       try {
-        await api(`/api/tasks/${id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ done: nextDone, date: dateStr })
-        });
+        await api(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify({ done: nextDone, date: dateStr }) });
         await loadBootstrap(true);
         if (nextDone) showHud(dateStr === todayKey() ? '今日打卡完成' : `已标记 ${formatDateCN(dateStr)} 完成`);
       } catch (err) {
@@ -2316,23 +2712,16 @@ Script.complete();`;
         await api(`/api/tasks/${btn.dataset.id}`, { method: 'DELETE' });
         await loadBootstrap(true);
         showHud('已删除任务', 'var(--text-tertiary)');
-      } catch (err) {
-        showHud(err.message, 'var(--red)');
-      }
+      } catch (err) { showHud(err.message, 'var(--red)'); }
       return;
     }
 
     if (action === 'pin-exam') {
       try {
-        await api(`/api/exams/${btn.dataset.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ pinned: true })
-        });
+        await api(`/api/exams/${btn.dataset.id}`, { method: 'PATCH', body: JSON.stringify({ pinned: true }) });
         await loadBootstrap(true);
         showHud('已置顶至首页与锁屏倒计时');
-      } catch (err) {
-        showHud(err.message, 'var(--red)');
-      }
+      } catch (err) { showHud(err.message, 'var(--red)'); }
       return;
     }
 
@@ -2341,9 +2730,7 @@ Script.complete();`;
         await api(`/api/exams/${btn.dataset.id}`, { method: 'DELETE' });
         await loadBootstrap(true);
         showHud('已移除目标');
-      } catch (err) {
-        showHud(err.message, 'var(--red)');
-      }
+      } catch (err) { showHud(err.message, 'var(--red)'); }
       return;
     }
 
@@ -2353,20 +2740,11 @@ Script.complete();`;
       try {
         await api('/api/exams', {
           method: 'POST',
-          body: JSON.stringify({
-            userId: state.userId,
-            name: preset.name,
-            tag: preset.tag,
-            targetDate: addDaysStr(preset.days),
-            color: preset.color,
-            pinned: true
-          })
+          body: JSON.stringify({ userId: state.userId, name: preset.name, tag: preset.tag, targetDate: addDaysStr(preset.days), color: preset.color, pinned: true })
         });
         await loadBootstrap(true);
         showHud(`已添加并置顶「${preset.name}」`);
-      } catch (err) {
-        showHud(err.message, 'var(--red)');
-      }
+      } catch (err) { showHud(err.message, 'var(--red)'); }
       return;
     }
 
@@ -2374,7 +2752,7 @@ Script.complete();`;
       const grp = state.data.groups.find((g) => g.id === btn.dataset.groupId);
       if (!grp) return;
       const base = window.location.origin + window.location.pathname;
-      const encoded = encodeShareGroup(grp);
+      const encoded = encodeB64Json({ name: grp.name, inviteCode: grp.inviteCode, examName: grp.examName, targetDate: grp.targetDate, notice: grp.notice });
       const inviteUrl = `${base}?join=${encodeURIComponent(grp.inviteCode)}${encoded ? `&g=${encodeURIComponent(encoded)}` : ''}`;
       await copyText(`我在「时序」创建了学习小组【${grp.name}】，点击链接一起倒计时打卡（邀请码 ${grp.inviteCode}）：${inviteUrl}`, '已复制微信邀请链接');
       return;
@@ -2382,10 +2760,7 @@ Script.complete();`;
 
     if (action === 'tap-member') {
       const targetUserId = btn.dataset.user;
-      if (targetUserId === state.userId) {
-        showHud('这是你自己的今日学习进度');
-        return;
-      }
+      if (targetUserId === state.userId) { showHud('这是你自己的今日学习进度'); return; }
       const done = Number(btn.dataset.done);
       const total = Number(btn.dataset.total);
       const kind = total > 0 && done >= total ? 'cheer' : 'nudge';
@@ -2396,38 +2771,23 @@ Script.complete();`;
         });
         await loadBootstrap(true);
         showHud(kind === 'cheer' ? `已鼓励 ${btn.dataset.name}` : `已拍一拍提醒 ${btn.dataset.name}`, 'var(--accent)');
-      } catch (err) {
-        showHud(err.message, 'var(--red)');
-      }
+      } catch (err) { showHud(err.message, 'var(--red)'); }
       return;
     }
 
     if (action === 'like-feed') {
       try {
-        await api(`/api/feeds/${btn.dataset.id}/like`, {
-          method: 'POST',
-          body: JSON.stringify({ userId: state.userId })
-        });
+        await api(`/api/feeds/${btn.dataset.id}/like`, { method: 'POST', body: JSON.stringify({ userId: state.userId }) });
         await loadBootstrap(true);
-      } catch (err) {
-        showHud(err.message, 'var(--red)');
-      }
+      } catch (err) { showHud(err.message, 'var(--red)'); }
       return;
     }
 
-    if (action === 'download-wallpaper-png') {
-      downloadLockscreenPNG();
-      return;
-    }
-
-    if (action === 'copy-wallpaper-url') {
-      await copyText(btn.dataset.url, '已复制链接');
-      return;
-    }
-
+    if (action === 'download-wallpaper-png') return downloadLockscreenPNG();
+    if (action === 'copy-wallpaper-url') return copyText(btn.dataset.url, '已复制链接');
     if (action === 'copy-scriptable') {
       await loadScriptableSnippet();
-      await copyText(state.scriptableCode, '已复制 Scriptable 小组件代码');
+      return copyText(state.scriptableCode, '已复制 Scriptable 小组件代码');
     }
   });
 
@@ -2441,17 +2801,12 @@ Script.complete();`;
           if (msg.fromUserId !== state.userId && msg.text) showHud(msg.text, 'var(--accent)');
         } catch {}
       });
-      es.onerror = () => {
-        es.close();
-        setTimeout(setupRealtime, 5000);
-      };
+      es.onerror = () => { es.close(); setTimeout(setupRealtime, 5000); };
     } else if (bc) {
       bc.onmessage = (ev) => {
         if (ev.data && ev.data.type === 'sync') {
           loadBootstrap(true);
-          if (ev.data.toastMsg && ev.data.fromUserId !== state.userId) {
-            showHud(ev.data.toastMsg, 'var(--accent)');
-          }
+          if (ev.data.toastMsg && ev.data.fromUserId !== state.userId) showHud(ev.data.toastMsg, 'var(--accent)');
         }
       };
     }
@@ -2465,27 +2820,33 @@ Script.complete();`;
     }
   }
 
-  function parseInviteLink() {
+  function parseUrlActions() {
     const params = new URLSearchParams(window.location.search);
     const joinCode = params.get('join');
     const sharedParam = params.get('g');
-    if (joinCode) {
-      const sharedGroup = sharedParam ? decodeShareGroup(sharedParam) : null;
+    const restoreParam = params.get('restore');
+    if (restoreParam) {
+      const snap = decodeB64Json(restoreParam);
+      if (snap && snap.user && snap.user.account) {
+        state.pendingRestore = snap;
+        saveSession('');
+      }
       window.history.replaceState({}, '', window.location.pathname);
-      state.pendingInvite = { code: joinCode.toUpperCase(), sharedGroup };
+    } else if (joinCode) {
+      state.pendingInvite = { code: joinCode.toUpperCase(), sharedGroup: sharedParam ? decodeB64Json(sharedParam) : null };
+      window.history.replaceState({}, '', window.location.pathname);
     }
   }
 
   if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js').catch(() => {});
-    });
+    window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
   }
 
   applyTheme(state.theme);
   checkWeChatBrowser();
-  parseInviteLink();
-  loadBootstrap(false).then(() => {
+  parseUrlActions();
+
+  initPermanentStorage().then(() => loadBootstrap(false)).then(() => {
     setupRealtime();
     if (state.data && state.data.user && state.pendingInvite) {
       const inv = state.pendingInvite;

@@ -69,6 +69,23 @@ function genInviteCode() {
   return out;
 }
 
+function normalizeAccount(acc) {
+  return String(acc || '').trim().toLowerCase().slice(0, 40);
+}
+
+function hashPassword(account, password) {
+  return crypto
+    .createHash('sha256')
+    .update(`shixu::v1::${normalizeAccount(account)}::${String(password || '')}`)
+    .digest('hex');
+}
+
+function sanitizeUser(u) {
+  if (!u) return null;
+  const { passwordHash, ...safe } = u;
+  return safe;
+}
+
 function escapeXml(str) {
   return String(str || '')
     .replace(/&/g, '&amp;')
@@ -87,9 +104,9 @@ function isTaskDoneOnDate(task, dateStr) {
   return Array.isArray(task.completedDates) ? task.completedDates.includes(dateStr) : Boolean(task.done && task.date === dateStr);
 }
 
-// Pure raw clean initial store — zero pre-filled demo data
 function createEmptyStore() {
   return {
+    schemaVersion: 4,
     lastRolloverDate: todayKey(),
     users: [],
     categories: [],
@@ -98,6 +115,25 @@ function createEmptyStore() {
     groups: [],
     feeds: []
   };
+}
+
+function migrateServerStore(s) {
+  if (!s || typeof s !== 'object') return createEmptyStore();
+  if (!Array.isArray(s.users)) s.users = [];
+  if (!Array.isArray(s.categories)) s.categories = [];
+  if (!Array.isArray(s.exams)) s.exams = [];
+  if (!Array.isArray(s.tasks)) s.tasks = [];
+  if (!Array.isArray(s.groups)) s.groups = [];
+  if (!Array.isArray(s.feeds)) s.feeds = [];
+  for (const u of s.users) {
+    if (!u.account) u.account = normalizeAccount(u.name || u.id);
+  }
+  for (const t of s.tasks) {
+    if (!t.category) t.category = t.subject || '未分组';
+    if (!Array.isArray(t.completedDates)) t.completedDates = t.done ? [t.date || todayKey()] : [];
+  }
+  s.schemaVersion = 4;
+  return s;
 }
 
 let store = null;
@@ -110,13 +146,12 @@ function ensureStore() {
     return;
   }
   try {
-    store = JSON.parse(fs.readFileSync(STORE_PATH, 'utf-8'));
-    if (!Array.isArray(store.categories)) store.categories = [];
+    store = migrateServerStore(JSON.parse(fs.readFileSync(STORE_PATH, 'utf-8')));
   } catch {
     store = createEmptyStore();
-    saveStore();
   }
   rolloverIfNeeded();
+  saveStore();
 }
 
 function saveStore() {
@@ -182,6 +217,7 @@ function buildGroupDTO(group) {
       const s = getUserTaskSummary(u.id, today);
       return {
         id: u.id,
+        account: u.account,
         name: u.name,
         avatar: u.avatar,
         color: u.color,
@@ -219,11 +255,19 @@ function buildGroupDTO(group) {
 
 function buildBootstrap(userId) {
   rolloverIfNeeded();
-  const user = store.users.find((u) => u.id === userId) || store.users[0] || null;
+  const user = userId ? store.users.find((u) => u.id === userId) : null;
   const today = todayKey();
 
   if (!user) {
-    return { today, user: null, users: [], categories: [], tasks: [], exams: [], groups: [] };
+    return {
+      today,
+      user: null,
+      users: store.users.map((u) => ({ id: u.id, account: u.account, name: u.name, avatar: u.avatar, color: u.color, streak: u.streak })),
+      categories: [],
+      tasks: [],
+      exams: [],
+      groups: []
+    };
   }
 
   const categories = store.categories.filter((c) => c.userId === user.id);
@@ -247,8 +291,8 @@ function buildBootstrap(userId) {
 
   return {
     today,
-    user,
-    users: store.users.map((u) => ({ id: u.id, name: u.name, avatar: u.avatar, color: u.color, streak: u.streak })),
+    user: sanitizeUser(user),
+    users: store.users.map((u) => ({ id: u.id, account: u.account, name: u.name, avatar: u.avatar, color: u.color, streak: u.streak })),
     categories,
     tasks,
     exams,
@@ -267,7 +311,7 @@ function buildWidgetPayload(userId) {
   const primaryGroup = data.groups[0] || null;
   return {
     updatedAt: new Date().toISOString(),
-    user: data.user ? { id: data.user.id, name: data.user.name, streak: data.user.streak } : { id: '', name: '未登录', streak: 0 },
+    user: data.user ? { id: data.user.id, account: data.user.account, name: data.user.name, streak: data.user.streak } : { id: '', account: '', name: '未登录', streak: 0 },
     countdown: {
       name: pinnedExam.name,
       tag: pinnedExam.tag,
@@ -310,7 +354,8 @@ function buildWallpaperSVG(userId, theme) {
     const circleFill = t.done ? accent : 'none';
     const circleStroke = t.done ? accent : muted;
     const textOpacity = t.done ? '0.48' : '1';
-    const title = escapeXml(t.title.length > 18 ? `${t.title.slice(0, 18)}…` : t.title);
+    const label = `${t.category} · ${t.title}`;
+    const title = escapeXml(label.length > 18 ? `${label.slice(0, 18)}…` : label);
     return `
       <circle cx="176" cy="${y - 10}" r="16" fill="${circleFill}" stroke="${circleStroke}" stroke-width="3.5" />
       ${t.done ? `<path d="M168 ${y - 10} L174 ${y - 4} L185 ${y - 16}" fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>` : ''}
@@ -404,7 +449,7 @@ if (!tasks.length) {
     const row = right.addStack(); row.centerAlignContent();
     const mark = row.addText(t.done ? "● " : "○ ");
     mark.font = Font.systemFont(11); mark.textColor = t.done ? accent : muted;
-    const title = row.addText(t.title);
+    const title = row.addText((t.category ? t.category + " · " : "") + t.title);
     title.font = Font.mediumSystemFont(12); title.textColor = t.done ? muted : fg; title.lineLimit = 1;
     right.addSpacer(4);
   }
@@ -425,7 +470,7 @@ function parseBody(req) {
     let raw = '';
     req.on('data', (chunk) => {
       raw += chunk;
-      if (raw.length > 1024 * 512) { reject(new Error('Body too large')); req.destroy(); }
+      if (raw.length > 1024 * 1024) { reject(new Error('Body too large')); req.destroy(); }
     });
     req.on('end', () => {
       if (!raw) return resolve({});
@@ -485,6 +530,102 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, buildBootstrap(urlObj.searchParams.get('userId') || ''));
     }
 
+    // Unified Account Register
+    if (method === 'POST' && (pathname === '/api/auth/register' || pathname === '/api/users')) {
+      const body = await parseBody(req);
+      const account = normalizeAccount(body.account || body.name);
+      const name = String(body.name || body.account || '').trim().slice(0, 16);
+      const password = String(body.password || '');
+      if (!account || account.length < 2) return sendJSON(res, 400, { error: '请输入至少 2 位统一账号（如手机号或英文名）' });
+      if (!name) return sendJSON(res, 400, { error: '请输入显示昵称' });
+      if (pathname === '/api/auth/register' && password.length < 4) return sendJSON(res, 400, { error: '请设置至少 4 位登录密码' });
+
+      const exists = store.users.find((u) => u.account === account);
+      if (exists) return sendJSON(res, 409, { error: '该账号已注册，请直接切换至「登录账户」' });
+
+      const user = {
+        id: genId('u'),
+        account,
+        name,
+        avatar: name.slice(0, 1),
+        color: body.color || SYSTEM_COLORS[store.users.length % SYSTEM_COLORS.length],
+        passwordHash: password ? hashPassword(account, password) : '',
+        streak: 0,
+        focusMinutesToday: 0,
+        createdAt: Date.now()
+      };
+      store.users.push(user);
+
+      if (body.joinCode) {
+        const code = String(body.joinCode).trim().toUpperCase();
+        const grp = store.groups.find((g) => g.inviteCode === code);
+        if (grp && !grp.memberIds.includes(user.id)) {
+          grp.memberIds.push(user.id);
+          store.feeds.push({ id: genId('f'), groupId: grp.id, userId: user.id, type: 'join', text: '加入了学习小组', createdAt: Date.now(), likedBy: [] });
+        }
+      }
+
+      saveStore();
+      broadcast('sync', { reason: 'user_created', userId: user.id });
+      return sendJSON(res, 201, { user: sanitizeUser(user), bootstrap: buildBootstrap(user.id) });
+    }
+
+    // Unified Account Login (restores full account data on ANY device!)
+    if (method === 'POST' && pathname === '/api/auth/login') {
+      const body = await parseBody(req);
+      const account = normalizeAccount(body.account);
+      const password = String(body.password || '');
+      const user = store.users.find((u) => u.account === account);
+      if (!user) return sendJSON(res, 404, { error: '未找到该统一账号，请检查账号或先注册' });
+      if (user.passwordHash && user.passwordHash !== hashPassword(account, password)) {
+        return sendJSON(res, 401, { error: '密码不正确，请重试' });
+      }
+      return sendJSON(res, 200, { user: sanitizeUser(user), bootstrap: buildBootstrap(user.id) });
+    }
+
+    // Import unified account backup snapshot (merge / restore safely)
+    if (method === 'POST' && pathname === '/api/account/import') {
+      const body = await parseBody(req);
+      const snap = body.snapshot;
+      if (!snap || !snap.user || !snap.user.account) return sendJSON(res, 400, { error: '无效的账户恢复数据' });
+      const acc = normalizeAccount(snap.user.account);
+      let user = store.users.find((u) => u.account === acc);
+      if (!user) {
+        user = {
+          id: snap.user.id || genId('u'),
+          account: acc,
+          name: snap.user.name || acc,
+          avatar: (snap.user.name || acc).slice(0, 1),
+          color: snap.user.color || SYSTEM_COLORS[0],
+          passwordHash: snap.user.passwordHash || '',
+          streak: snap.user.streak || 0,
+          focusMinutesToday: snap.user.focusMinutesToday || 0,
+          createdAt: snap.user.createdAt || Date.now()
+        };
+        store.users.push(user);
+      } else {
+        user.name = snap.user.name || user.name;
+        user.streak = Math.max(user.streak || 0, snap.user.streak || 0);
+      }
+
+      for (const c of snap.categories || []) {
+        ensureCategoryForUser(user.id, c.name, c.color);
+      }
+      for (const e of snap.exams || []) {
+        if (!store.exams.some((x) => x.userId === user.id && x.name === e.name && x.targetDate === e.targetDate)) {
+          store.exams.push({ ...e, id: genId('ex'), userId: user.id });
+        }
+      }
+      for (const t of snap.tasks || []) {
+        if (!store.tasks.some((x) => x.userId === user.id && x.title === t.title && x.date === t.date)) {
+          store.tasks.push({ ...t, id: genId('t'), userId: user.id });
+        }
+      }
+      saveStore();
+      broadcast('sync', { reason: 'account_imported', userId: user.id });
+      return sendJSON(res, 200, { user: sanitizeUser(user), bootstrap: buildBootstrap(user.id) });
+    }
+
     if (method === 'POST' && pathname === '/api/reset') {
       store = createEmptyStore();
       saveStore();
@@ -511,38 +652,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Users
-    if (method === 'POST' && pathname === '/api/users') {
-      const body = await parseBody(req);
-      const name = String(body.name || '').trim().slice(0, 16);
-      if (!name) return sendJSON(res, 400, { error: '请输入昵称' });
-
-      const user = {
-        id: genId('u'),
-        name,
-        avatar: name.slice(0, 1),
-        color: body.color || SYSTEM_COLORS[store.users.length % SYSTEM_COLORS.length],
-        streak: 0,
-        focusMinutesToday: 0,
-        createdAt: Date.now()
-      };
-      store.users.push(user);
-
-      if (body.joinCode) {
-        const code = String(body.joinCode).trim().toUpperCase();
-        const grp = store.groups.find((g) => g.inviteCode === code);
-        if (grp && !grp.memberIds.includes(user.id)) {
-          grp.memberIds.push(user.id);
-          store.feeds.push({ id: genId('f'), groupId: grp.id, userId: user.id, type: 'join', text: '加入了学习小组', createdAt: Date.now(), likedBy: [] });
-        }
-      }
-
-      saveStore();
-      broadcast('sync', { reason: 'user_created', userId: user.id });
-      return sendJSON(res, 201, { user, bootstrap: buildBootstrap(user.id) });
-    }
-
-    // Custom Task Categories (大标题管理)
+    // Categories
     if (method === 'POST' && pathname === '/api/categories') {
       const body = await parseBody(req);
       const userId = body.userId;
@@ -591,7 +701,7 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { ok: true });
     }
 
-    // Create Task (supports custom category big title & specific timeline date)
+    // Tasks
     if (method === 'POST' && pathname === '/api/tasks') {
       const body = await parseBody(req);
       const userId = body.userId;
@@ -599,9 +709,7 @@ const server = http.createServer(async (req, res) => {
       if (!userId || !title) return sendJSON(res, 400, { error: '请输入任务名称' });
 
       const categoryName = String(body.category || body.subject || '未分组').trim().slice(0, 18) || '未分组';
-      if (categoryName !== '未分组') {
-        ensureCategoryForUser(userId, categoryName, body.categoryColor);
-      }
+      if (categoryName !== '未分组') ensureCategoryForUser(userId, categoryName, body.categoryColor);
 
       const taskDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : todayKey();
       const task = {
@@ -622,7 +730,6 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 201, { task });
     }
 
-    // Toggle Task for a specific timeline date
     const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)$/);
     if (taskMatch && method === 'PATCH') {
       const body = await parseBody(req);

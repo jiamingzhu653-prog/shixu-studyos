@@ -1,8 +1,9 @@
-const CACHE_NAME = 'shixu-shell-v4';
+const CACHE_NAME = 'shixu-shell-v5';
 const SHELL_ASSETS = [
   './',
   './index.html',
   './styles.css',
+  './cloud-config.js',
   './app.js',
   './manifest.webmanifest',
   './icons/apple-touch-icon.png',
@@ -26,7 +27,7 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  if (url.pathname.includes('/api/')) return;
+  if (url.pathname.includes('/api/') || url.hostname.includes('supabase.co')) return;
   event.respondWith(
     fetch(event.request)
       .then((res) => {
