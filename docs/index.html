@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <title>时序 · 每日学习任务、考试倒计时与学习小组</title>
+  <meta name="description" content="专为 iPhone 打造的苹果原生质感每日学习清单、考试倒计时与多人共学小组平台，支持 Safari 一键添加至主屏幕与锁屏倒计时。" />
+
+  <!-- iOS Safari PWA Native Fullscreen Meta -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" id="meta-status-bar" />
+  <meta name="apple-mobile-web-app-title" content="时序" />
+  <meta name="format-detection" content="telephone=no" />
+  <meta name="theme-color" content="#F5F5F7" id="meta-theme-color" />
+
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="./icons/favicon-32.png" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <!-- WeChat In-App Browser Guidance Banner (auto-shown only inside WeChat) -->
+  <div id="wechat-guide" class="wechat-overlay hidden" role="dialog" aria-label="请在 Safari 中打开">
+    <div class="wechat-arrow" aria-hidden="true">↗</div>
+    <div class="wechat-card">
+      <div class="wechat-title">在 Safari 中打开以获得完整体验</div>
+      <p class="wechat-desc">点击右上角 <strong>···</strong> 选择「在默认浏览器中打开」，即可一键添加至 iPhone 主屏幕全屏使用。</p>
+      <button id="wechat-dismiss" class="btn-secondary btn-sm">先在微信内浏览</button>
+    </div>
+  </div>
+
+  <!-- Apple Dynamic-Island-style Floating HUD Pill -->
+  <div id="hud-pill" class="hud-pill" role="status" aria-live="polite">
+    <span id="hud-dot" class="hud-dot"></span>
+    <span id="hud-text">已同步</span>
+  </div>
+
+  <!-- Main App Shell -->
+  <div id="app-shell" class="app-shell">
+
+    <!-- Collapsing iOS Frosted Top Navigation Bar -->
+    <header id="top-nav" class="top-nav">
+      <div class="top-nav-inner">
+        <button id="nav-user-btn" class="nav-user-chip" aria-label="切换或创建学习账号">
+          <span id="nav-avatar" class="avatar-dot">陈</span>
+          <span id="nav-username" class="nav-username">陈同学</span>
+        </button>
+
+        <span id="nav-compact-title" class="nav-compact-title">今日学习</span>
+
+        <div class="nav-actions">
+          <button id="nav-focus-btn" class="icon-btn" title="开启专注计时" aria-label="开启专注计时">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="13" r="8"/>
+              <path d="M12 9v4l2.5 1.5"/>
+              <path d="M9 2h6"/>
+            </svg>
+          </button>
+          <button id="nav-theme-btn" class="icon-btn" title="切换浅色或深色外观" aria-label="切换外观">
+            <svg id="theme-icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="4"/>
+              <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+            </svg>
+            <svg id="theme-icon-moon" class="hidden" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Scrollable Main Viewport -->
+    <main id="main-scroll" class="main-scroll">
+      <div id="view-container" class="view-container">
+        <!-- Rendered dynamically by app.js -->
+      </div>
+    </main>
+
+    <!-- Floating Action Button (contextual on Today / Exams) -->
+    <button id="fab-add" class="fab-add" aria-label="新建">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+        <path d="M12 5v14M5 12h14"/>
+      </svg>
+    </button>
+
+    <!-- iOS Frosted Glass Bottom Tab Bar -->
+    <nav class="tab-bar" aria-label="主导航">
+      <button class="tab-item is-active" data-tab="today" id="tab-btn-today">
+        <span class="tab-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="17" rx="4"/>
+            <path d="M8 2v4M16 2v4M3 10h18"/>
+            <path d="M9 15.2l2 2 4-4.2"/>
+          </svg>
+        </span>
+        <span class="tab-label">今日</span>
+      </button>
+
+      <button class="tab-item" data-tab="groups" id="tab-btn-groups">
+        <span class="tab-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+          </svg>
+        </span>
+        <span class="tab-label">小组</span>
+      </button>
+
+      <button class="tab-item" data-tab="exams" id="tab-btn-exams">
+        <span class="tab-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M12 7v5l3.2 2.2"/>
+          </svg>
+        </span>
+        <span class="tab-label">倒计时</span>
+      </button>
+
+      <button class="tab-item" data-tab="desktop" id="tab-btn-desktop">
+        <span class="tab-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="6" y="2.5" width="12" height="19" rx="3"/>
+            <path d="M10.5 18.5h3"/>
+            <rect x="8.5" y="6" width="7" height="4.5" rx="1.2"/>
+          </svg>
+        </span>
+        <span class="tab-label">桌面</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- iOS Native Modal Sheet Backdrop + Sheet Container -->
+  <div id="sheet-backdrop" class="sheet-backdrop hidden" aria-hidden="true">
+    <div id="sheet-panel" class="sheet-panel" role="dialog" aria-modal="true">
+      <div class="sheet-grabber-wrap">
+        <div class="sheet-grabber"></div>
+      </div>
+      <div id="sheet-content" class="sheet-content"></div>
+    </div>
+  </div>
+
+  <!-- Hidden Canvas for crisp 1170x2532 iPhone Lock Screen PNG export -->
+  <canvas id="wallpaper-canvas" width="1170" height="2532" class="hidden"></canvas>
+
+  <script src="./app.js"></script>
+</body>
+</html>

@@ -1,0 +1,1565 @@
+/* ==========================================================================
+   时序 StudyOS — Apple Human Interface Guidelines Design System (Vanilla CSS)
+   Light & Dark OLED surfaces, optical typography, spring physics motion
+   ========================================================================== */
+
+:root {
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+               "PingFang SC", "Hiragino Sans GB", "Helvetica Neue", sans-serif;
+
+  /* Apple Daylight Palette */
+  --bg-canvas: #F5F5F7;
+  --bg-page-outer: #ECECEF;
+  --bg-surface: #FFFFFF;
+  --bg-surface-secondary: #F2F2F7;
+  --bg-surface-hover: #FAFAFC;
+  --bg-frosted: rgba(245, 245, 247, 0.78);
+  --bg-frosted-strong: rgba(255, 255, 255, 0.88);
+  --bg-sheet: #F5F5F7;
+
+  --text-primary: #1D1D1F;
+  --text-secondary: #6E6E73;
+  --text-tertiary: #86868B;
+
+  --border-hairline: rgba(0, 0, 0, 0.065);
+  --border-separator: rgba(0, 0, 0, 0.08);
+  --shadow-card: 0 2px 12px rgba(0, 0, 0, 0.035), 0 1px 2px rgba(0, 0, 0, 0.025);
+  --shadow-elevated: 0 12px 34px rgba(0, 0, 0, 0.10), 0 2px 6px rgba(0, 0, 0, 0.04);
+  --shadow-hero: 0 14px 32px rgba(0, 113, 227, 0.22), 0 2px 8px rgba(0, 113, 227, 0.14);
+
+  /* Apple System Accents */
+  --accent: #0071E3;
+  --accent-hover: #0077ED;
+  --accent-soft: rgba(0, 113, 227, 0.10);
+  --green: #28CD41;
+  --green-soft: rgba(40, 205, 65, 0.12);
+  --orange: #FF9500;
+  --orange-soft: rgba(255, 149, 0, 0.12);
+  --red: #FF3B30;
+  --red-soft: rgba(255, 59, 48, 0.11);
+
+  /* Motion */
+  --ease-apple: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-fast: 180ms;
+  --dur-base: 300ms;
+  --dur-slow: 520ms;
+
+  /* Radii & Safe Areas */
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 22px;
+  --radius-pill: 999px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+html[data-theme="dark"] {
+  --bg-canvas: #000000;
+  --bg-page-outer: #09090B;
+  --bg-surface: #1C1C1E;
+  --bg-surface-secondary: #2C2C2E;
+  --bg-surface-hover: #242426;
+  --bg-frosted: rgba(14, 14, 16, 0.78);
+  --bg-frosted-strong: rgba(28, 28, 30, 0.88);
+  --bg-sheet: #1C1C1E;
+
+  --text-primary: #F5F5F7;
+  --text-secondary: #98989D;
+  --text-tertiary: #636366;
+
+  --border-hairline: rgba(255, 255, 255, 0.09);
+  --border-separator: rgba(255, 255, 255, 0.11);
+  --shadow-card: 0 2px 14px rgba(0, 0, 0, 0.36);
+  --shadow-elevated: 0 16px 40px rgba(0, 0, 0, 0.65);
+  --shadow-hero: 0 16px 36px rgba(0, 0, 0, 0.55);
+
+  --accent: #0A84FF;
+  --accent-hover: #409CFF;
+  --accent-soft: rgba(10, 132, 255, 0.16);
+  --green: #30D158;
+  --green-soft: rgba(48, 209, 88, 0.16);
+  --orange: #FF9F0A;
+  --orange-soft: rgba(255, 159, 10, 0.16);
+  --red: #FF453A;
+  --red-soft: rgba(255, 69, 58, 0.16);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: var(--font-sans);
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+button, input, select, textarea {
+  font-family: inherit;
+  color: inherit;
+}
+
+button {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   App Shell (Edge-to-edge on iPhone, Centered Apple Canvas on Desktop)
+   ========================================================================== */
+
+.app-shell {
+  position: relative;
+  width: 100%;
+  height: 100dvh;
+  max-width: 480px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-canvas);
+  overflow: hidden;
+}
+
+@media (min-width: 640px) {
+  body {
+    background: var(--bg-page-outer);
+  }
+  .app-shell {
+    border-left: 1px solid var(--border-hairline);
+    border-right: 1px solid var(--border-hairline);
+    box-shadow: 0 0 60px rgba(0, 0, 0, 0.06);
+  }
+  html[data-theme="dark"] .app-shell {
+    box-shadow: 0 0 80px rgba(0, 0, 0, 0.65);
+  }
+}
+
+/* ==========================================================================
+   Floating Dynamic-Island-Inspired Notification HUD
+   ========================================================================== */
+
+.hud-pill {
+  position: fixed;
+  top: calc(var(--safe-top) + 12px);
+  left: 50%;
+  transform: translate(-50%, -140%) scale(0.9);
+  opacity: 0;
+  z-index: 200;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 36px);
+  padding: 10px 18px;
+  border-radius: var(--radius-pill);
+  background: #1D1D1F;
+  color: #F5F5F7;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+  transition: transform 420ms var(--ease-spring), opacity 240ms ease;
+}
+
+html[data-theme="dark"] .hud-pill {
+  background: #2C2C2E;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.hud-pill.is-visible {
+  transform: translate(-50%, 0) scale(1);
+  opacity: 1;
+}
+
+.hud-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  flex-shrink: 0;
+}
+
+/* ==========================================================================
+   Collapsing Top Frosted Navigation Bar
+   ========================================================================== */
+
+.top-nav {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  padding-top: var(--safe-top);
+  background: transparent;
+  border-bottom: 1px solid transparent;
+  transition: background var(--dur-base) var(--ease-apple),
+              border-color var(--dur-base) var(--ease-apple);
+}
+
+.top-nav.is-scrolled {
+  background: var(--bg-frosted);
+  backdrop-filter: saturate(180%) blur(24px);
+  -webkit-backdrop-filter: saturate(180%) blur(24px);
+  border-bottom-color: var(--border-hairline);
+}
+
+.top-nav-inner {
+  height: 52px;
+  padding: 0 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: relative;
+}
+
+.nav-user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px 4px 4px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: transform var(--dur-fast) var(--ease-apple);
+}
+
+.nav-user-chip:active {
+  transform: scale(0.95);
+}
+
+.avatar-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #FFFFFF;
+  background: var(--accent);
+}
+
+.nav-username {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-compact-title {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%) translateY(6px);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 240ms var(--ease-apple), transform 260ms var(--ease-apple);
+}
+
+.top-nav.is-scrolled .nav-compact-title {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: transform var(--dur-fast) var(--ease-apple), background var(--dur-fast) ease;
+}
+
+.icon-btn:active {
+  transform: scale(0.92);
+}
+
+/* ==========================================================================
+   Scroll Area & View Entrance Animation
+   ========================================================================== */
+
+.main-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(96px + var(--safe-bottom));
+}
+
+.view-container {
+  padding: 2px 18px 24px;
+  animation: appleViewEnter 340ms var(--ease-apple) both;
+}
+
+@keyframes appleViewEnter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Large iOS Page Header */
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.page-date {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
+  margin-bottom: 2px;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 32px;
+  line-height: 1.12;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+/* ==========================================================================
+   Apple Surface Cards & Sections
+   ========================================================================== */
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 22px 2px 10px;
+}
+
+.section-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: -0.01em;
+}
+
+.section-action {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.card-padded {
+  padding: 18px;
+}
+
+/* Hero Countdown Card (Clean Apple Cobalt Depth) */
+.hero-countdown {
+  position: relative;
+  border-radius: 24px;
+  padding: 20px 22px 22px;
+  color: #FFFFFF;
+  background: linear-gradient(145deg, #0077ED 0%, #005AC1 100%);
+  box-shadow: var(--shadow-hero);
+  overflow: hidden;
+  transition: transform var(--dur-fast) var(--ease-apple);
+}
+
+html[data-theme="dark"] .hero-countdown {
+  background: linear-gradient(145deg, #0A84FF 0%, #004A9F 100%);
+}
+
+.hero-countdown::after {
+  content: "";
+  position: absolute;
+  top: -50%;
+  right: -22%;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.20) 0%, rgba(255, 255, 255, 0) 70%);
+  pointer-events: none;
+}
+
+.hero-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.84);
+}
+
+.hero-target-date {
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.16);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.hero-exam-name {
+  margin: 6px 0 0;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.hero-metrics {
+  margin-top: 16px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hero-days-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.hero-days-num {
+  font-size: 52px;
+  line-height: 0.96;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+.hero-days-unit {
+  font-size: 15px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.hero-progress-meta {
+  text-align: right;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.hero-progress-val {
+  font-size: 15px;
+  font-weight: 600;
+  color: #FFFFFF;
+  margin-top: 2px;
+}
+
+.hero-bar {
+  margin-top: 16px;
+  height: 5px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.22);
+  overflow: hidden;
+}
+
+.hero-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: #FFFFFF;
+  transition: width 600ms var(--ease-apple);
+}
+
+/* Summary Strip (Two Minimal Apple Metrics) */
+.summary-strip {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.summary-tile {
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  transition: transform var(--dur-fast) var(--ease-apple);
+}
+
+.summary-tile:active {
+  transform: scale(0.97);
+}
+
+.summary-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.summary-value {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  margin-top: 2px;
+}
+
+.summary-sub {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+/* Progress Ring */
+.ring-box {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.ring-box svg {
+  transform: rotate(-90deg);
+}
+
+.ring-track {
+  fill: none;
+  stroke: var(--border-separator);
+}
+
+.ring-fill {
+  fill: none;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 600ms var(--ease-apple);
+}
+
+.ring-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   iOS Grouped Task List (Apple Reminders Inspired)
+   ========================================================================== */
+
+.ios-list {
+  overflow: hidden;
+}
+
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  position: relative;
+  transition: background var(--dur-fast) ease, opacity var(--dur-base) ease;
+}
+
+.task-row + .task-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 52px;
+  right: 0;
+  height: 1px;
+  background: var(--border-separator);
+}
+
+.task-check-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--text-tertiary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 240ms var(--ease-apple),
+              border-color 240ms var(--ease-apple),
+              transform 320ms var(--ease-spring);
+}
+
+.task-check-btn:active {
+  transform: scale(0.84);
+}
+
+.task-row.is-done .task-check-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+  transform: scale(1);
+  animation: checkPop 360ms var(--ease-spring);
+}
+
+@keyframes checkPop {
+  0% { transform: scale(0.8); }
+  55% { transform: scale(1.16); }
+  100% { transform: scale(1); }
+}
+
+.task-check-svg {
+  width: 13px;
+  height: 13px;
+  color: #FFFFFF;
+  opacity: 0;
+  transform: scale(0.5);
+  transition: opacity 180ms ease, transform 260ms var(--ease-spring);
+}
+
+.task-row.is-done .task-check-svg {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.task-main {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+
+.task-title {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  transition: color var(--dur-base) ease;
+}
+
+.task-row.is-done .task-title {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+}
+
+.task-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.meta-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: var(--bg-surface-secondary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.task-delete-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  opacity: 0.65;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease, opacity var(--dur-fast) ease;
+}
+
+.task-delete-btn:hover,
+.task-delete-btn:active {
+  background: var(--red-soft);
+  color: var(--red);
+  opacity: 1;
+}
+
+/* ==========================================================================
+   Study Groups (Multiplayer Progress Wall & Live Feed)
+   ========================================================================== */
+
+.group-pills {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  margin-bottom: 14px;
+  scrollbar-width: none;
+}
+
+.group-pills::-webkit-scrollbar {
+  display: none;
+}
+
+.group-pill {
+  padding: 7px 14px;
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-hairline);
+  transition: all var(--dur-fast) var(--ease-apple);
+}
+
+.group-pill.is-active {
+  background: var(--text-primary);
+  color: var(--bg-surface);
+  border-color: transparent;
+}
+
+.group-pill:active {
+  transform: scale(0.95);
+}
+
+.group-banner {
+  padding: 18px 20px;
+}
+
+.group-banner-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.group-name {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.group-notice {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.group-days-badge {
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.group-days-num {
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--accent);
+}
+
+.group-days-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 3px;
+}
+
+.group-progress-row {
+  margin-top: 16px;
+}
+
+.group-progress-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 7px;
+}
+
+.progress-track {
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface-secondary);
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  transition: width 550ms var(--ease-apple);
+}
+
+.group-invite-bar {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-separator);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.invite-code-box {
+  display: flex;
+  flex-direction: column;
+}
+
+.invite-code-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.invite-code-val {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+  margin-top: 1px;
+}
+
+/* Member Ring Grid */
+.member-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  padding: 16px 14px;
+}
+
+.member-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 6px 2px;
+  border-radius: var(--radius-md);
+  transition: transform var(--dur-fast) var(--ease-apple), background var(--dur-fast) ease;
+}
+
+.member-tile:active {
+  transform: scale(0.94);
+  background: var(--bg-surface-secondary);
+}
+
+.member-avatar-inner {
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #FFFFFF;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.member-name {
+  margin-top: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.member-ratio {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 1px;
+}
+
+.member-hint {
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--border-separator);
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+/* Live Activity Feed */
+.feed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.feed-item {
+  padding: 13px 15px;
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+
+.feed-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #FFFFFF;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.feed-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.feed-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.feed-user {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.feed-time {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.feed-text {
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.like-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--bg-surface-secondary);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  transition: all var(--dur-fast) var(--ease-spring);
+}
+
+.like-btn.is-liked {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.like-btn:active {
+  transform: scale(0.9);
+}
+
+/* ==========================================================================
+   Exams List & Presets
+   ========================================================================== */
+
+.exam-card {
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  transition: transform var(--dur-fast) var(--ease-apple);
+}
+
+.exam-card + .exam-card {
+  margin-top: 10px;
+}
+
+.exam-card:active {
+  transform: scale(0.985);
+}
+
+.exam-left {
+  flex: 1;
+  min-width: 0;
+}
+
+.exam-tag-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.exam-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.exam-pin-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.exam-name {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  margin-top: 4px;
+}
+
+.exam-date-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 3px;
+}
+
+.exam-right {
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.exam-days-big {
+  font-size: 32px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.exam-actions-inline {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  font-size: 12px;
+}
+
+/* ==========================================================================
+   Desktop & iOS Lockscreen Wallpaper / Scriptable View
+   ========================================================================== */
+
+.step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.step-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.step-num {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.step-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.step-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.wallpaper-preview-frame {
+  margin-top: 14px;
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid var(--border-hairline);
+  background: var(--bg-surface-secondary);
+  aspect-ratio: 9 / 14;
+  max-height: 310px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.wallpaper-preview-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.code-preview {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--bg-surface-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  max-height: 110px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ==========================================================================
+   Buttons & Inputs (Apple HIG Controls)
+   ========================================================================== */
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 11px 18px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: #FFFFFF;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  transition: transform var(--dur-fast) var(--ease-apple), background var(--dur-fast) ease;
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn-primary:active {
+  transform: scale(0.96);
+}
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  transition: transform var(--dur-fast) var(--ease-apple);
+}
+
+.btn-secondary:active {
+  transform: scale(0.96);
+}
+
+.btn-sm {
+  padding: 7px 13px;
+  font-size: 12px;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.btn-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+/* Form Controls */
+.field {
+  margin-bottom: 14px;
+}
+
+.field-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.input {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 13px;
+  border: 1px solid var(--border-separator);
+  background: var(--bg-surface);
+  font-size: 15px;
+  outline: none;
+  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
+}
+
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.choice-chip {
+  padding: 7px 13px;
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-separator);
+  color: var(--text-primary);
+  transition: all var(--dur-fast) ease;
+}
+
+.choice-chip.is-selected {
+  background: var(--accent);
+  color: #FFFFFF;
+  border-color: var(--accent);
+}
+
+/* iOS Toggle Switch */
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-radius: 13px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+}
+
+.ios-switch {
+  position: relative;
+  width: 48px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface-secondary);
+  transition: background 240ms var(--ease-apple);
+}
+
+.ios-switch.is-on {
+  background: var(--green);
+}
+
+.ios-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #FFFFFF;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  transition: transform 260ms var(--ease-spring);
+}
+
+.ios-switch.is-on::after {
+  transform: translateX(20px);
+}
+
+/* ==========================================================================
+   Floating Action Button & Frosted Bottom Tab Bar
+   ========================================================================== */
+
+.fab-add {
+  position: absolute;
+  right: 18px;
+  bottom: calc(74px + var(--safe-bottom));
+  z-index: 45;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #FFFFFF;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 10px 24px rgba(0, 113, 227, 0.34);
+  transition: transform 280ms var(--ease-spring), opacity 220ms ease;
+}
+
+.fab-add:active {
+  transform: scale(0.9);
+}
+
+.fab-add.is-hidden {
+  opacity: 0;
+  transform: scale(0.75);
+  pointer-events: none;
+}
+
+.tab-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  padding: 8px 8px calc(8px + var(--safe-bottom));
+  background: var(--bg-frosted);
+  backdrop-filter: saturate(180%) blur(24px);
+  -webkit-backdrop-filter: saturate(180%) blur(24px);
+  border-top: 1px solid var(--border-hairline);
+}
+
+.tab-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 2px 0;
+  color: var(--text-tertiary);
+  transition: color var(--dur-fast) ease;
+}
+
+.tab-item.is-active {
+  color: var(--accent);
+}
+
+.tab-icon {
+  display: inline-flex;
+  transition: transform 320ms var(--ease-spring);
+}
+
+.tab-item.is-active .tab-icon {
+  transform: translateY(-1px) scale(1.06);
+}
+
+.tab-item:active .tab-icon {
+  transform: scale(0.88);
+}
+
+.tab-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* ==========================================================================
+   iOS Bottom Sheet Modal (UISheetPresentationController)
+   ========================================================================== */
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 260ms var(--ease-apple);
+}
+
+.sheet-backdrop.is-open {
+  opacity: 1;
+}
+
+.sheet-panel {
+  width: 100%;
+  max-width: 480px;
+  max-height: 88dvh;
+  background: var(--bg-sheet);
+  border-radius: 26px 26px 0 0;
+  box-shadow: var(--shadow-elevated);
+  display: flex;
+  flex-direction: column;
+  transform: translateY(100%);
+  transition: transform 360ms var(--ease-apple);
+  padding-bottom: calc(20px + var(--safe-bottom));
+}
+
+.sheet-backdrop.is-open .sheet-panel {
+  transform: translateY(0);
+}
+
+.sheet-grabber-wrap {
+  padding: 10px 0 6px;
+  display: flex;
+  justify-content: center;
+}
+
+.sheet-grabber {
+  width: 38px;
+  height: 5px;
+  border-radius: var(--radius-pill);
+  background: var(--border-separator);
+}
+
+.sheet-content {
+  padding: 6px 20px 8px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.sheet-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.sheet-close {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--bg-surface-secondary);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+}
+
+/* Focus Timer Dial inside Sheet */
+.focus-dial-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0 12px;
+}
+
+.focus-time-big {
+  font-size: 46px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* WeChat Guidance Overlay */
+.wechat-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.wechat-arrow {
+  font-size: 40px;
+  color: #FFFFFF;
+  margin-right: 12px;
+  margin-top: 4px;
+}
+
+.wechat-card {
+  width: 100%;
+  max-width: 360px;
+  margin: 12px auto 0;
+  padding: 22px;
+  border-radius: 22px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.wechat-title {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.wechat-desc {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  margin: 10px 0 16px;
+}
+
+/* Empty State */
+.empty-box {
+  padding: 36px 20px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+/* Account Switcher List */
+.account-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  margin-bottom: 8px;
+  transition: transform var(--dur-fast) ease;
+}
+
+.account-row:active {
+  transform: scale(0.98);
+}
+
+.account-left {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.account-check {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}

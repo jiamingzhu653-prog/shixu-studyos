@@ -1,0 +1,13 @@
+{
+  "name": "shixu-studyos-web",
+  "version": "1.0.0",
+  "description": "时序 StudyOS — 聚焦 iOS Safari PWA 的苹果原生风格每日学习任务、考试倒计时与多人学习小组平台",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
