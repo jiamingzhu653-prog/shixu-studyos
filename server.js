@@ -730,11 +730,39 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 201, { task });
     }
 
+    if (method === 'POST' && pathname === '/api/tasks/restore') {
+      const body = await parseBody(req);
+      const t = body.task;
+      if (!t || !t.id || !t.userId || !t.title) return sendJSON(res, 400, { error: '无效任务' });
+      if (!store.tasks.some((x) => x.id === t.id)) {
+        store.tasks.unshift(t);
+        if (t.category && t.category !== '未分组') ensureCategoryForUser(t.userId, t.category);
+        saveStore();
+        broadcast('sync', { reason: 'task_restored', userId: t.userId });
+      }
+      return sendJSON(res, 200, { task: t });
+    }
+
     const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)$/);
     if (taskMatch && method === 'PATCH') {
       const body = await parseBody(req);
       const task = store.tasks.find((t) => t.id === taskMatch[1]);
       if (!task) return sendJSON(res, 404, { error: '任务不存在' });
+
+      if (typeof body.title === 'string' && body.title.trim()) task.title = body.title.trim().slice(0, 60);
+      if (typeof body.category === 'string' && body.category.trim()) {
+        const cat = body.category.trim().slice(0, 18);
+        task.category = cat;
+        task.subject = cat;
+        if (cat !== '未分组') ensureCategoryForUser(task.userId, cat);
+      }
+      if (typeof body.durationMin === 'number' && body.durationMin >= 5) {
+        task.durationMin = Math.min(360, Math.round(body.durationMin));
+      }
+      if (typeof body.repeatDaily === 'boolean') task.repeatDaily = body.repeatDaily;
+      if (typeof body.scheduledDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.scheduledDate)) {
+        task.date = body.scheduledDate;
+      }
 
       const targetDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : todayKey();
       if (!Array.isArray(task.completedDates)) task.completedDates = [];
@@ -769,7 +797,7 @@ const server = http.createServer(async (req, res) => {
       const [removed] = store.tasks.splice(idx, 1);
       saveStore();
       broadcast('sync', { reason: 'task_deleted', userId: removed.userId });
-      return sendJSON(res, 200, { ok: true });
+      return sendJSON(res, 200, { ok: true, removed });
     }
 
     // Exams
@@ -804,6 +832,10 @@ const server = http.createServer(async (req, res) => {
       const body = await parseBody(req);
       const exam = store.exams.find((e) => e.id === examMatch[1]);
       if (!exam) return sendJSON(res, 404, { error: '目标不存在' });
+      if (typeof body.name === 'string' && body.name.trim()) exam.name = body.name.trim().slice(0, 30);
+      if (typeof body.tag === 'string' && body.tag.trim()) exam.tag = body.tag.trim().slice(0, 12);
+      if (typeof body.targetDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.targetDate)) exam.targetDate = body.targetDate;
+      if (typeof body.color === 'string' && body.color) exam.color = body.color;
       if (body.pinned === true) {
         for (const e of store.exams) if (e.userId === exam.userId) e.pinned = false;
         exam.pinned = true;
@@ -886,6 +918,32 @@ const server = http.createServer(async (req, res) => {
         broadcast('sync', { reason: 'group_joined', groupId: group.id });
       }
       return sendJSON(res, 200, { group: buildGroupDTO(group) });
+    }
+
+    const groupFeedMatch = pathname.match(/^\/api\/groups\/([^/]+)\/feed$/);
+    if (groupFeedMatch && method === 'POST') {
+      const body = await parseBody(req);
+      const text = String(body.text || '').trim().slice(0, 100);
+      if (!body.userId || !text) return sendJSON(res, 400, { error: '请输入要发布的学习动态' });
+      store.feeds.push({ id: genId('f'), groupId: groupFeedMatch[1], userId: body.userId, type: 'note', text, createdAt: Date.now(), likedBy: [] });
+      saveStore();
+      broadcast('sync', { reason: 'feed_posted', groupId: groupFeedMatch[1] });
+      return sendJSON(res, 201, { ok: true });
+    }
+
+    const groupLeaveMatch = pathname.match(/^\/api\/groups\/([^/]+)\/leave$/);
+    if (groupLeaveMatch && method === 'POST') {
+      const body = await parseBody(req);
+      const grp = store.groups.find((g) => g.id === groupLeaveMatch[1]);
+      if (grp) {
+        grp.memberIds = grp.memberIds.filter((id) => id !== body.userId);
+        if (grp.memberIds.length === 0) {
+          store.groups = store.groups.filter((g) => g.id !== grp.id);
+        }
+        saveStore();
+        broadcast('sync', { reason: 'group_left', groupId: grp.id });
+      }
+      return sendJSON(res, 200, { ok: true });
     }
 
     const nudgeMatch = pathname.match(/^\/api\/groups\/([^/]+)\/nudge$/);

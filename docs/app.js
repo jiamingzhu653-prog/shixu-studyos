@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  // PERMANENT NEVER-CHANGING STORAGE KEYS (Guaranteed zero data loss across all future website updates)
+  // PERMANENT NEVER-CHANGING STORAGE KEYS (Zero data loss across all website updates)
   const PERMANENT_VAULT_KEY = 'shixu_account_vault_permanent';
   const PERMANENT_SESSION_KEY = 'shixu_session_permanent';
   const LEGACY_VAULT_KEYS = ['shixu_raw_store_v3', 'shixu_raw_store_v2'];
@@ -26,13 +26,18 @@
     desktop: 'iOS 桌面与组件'
   };
 
-  function todayKey() { return formatDateISO(new Date()); }
+  // Safe date helpers (hardened against invalid dates / NaN)
+  function isValidDateISO(str) {
+    return typeof str === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(str);
+  }
   function formatDateISO(d) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
+  function todayKey() { return formatDateISO(new Date()); }
   function parseDateISO(str) {
-    const [y, m, d] = String(str || '').split('-').map(Number);
-    return new Date(y || 2026, (m || 1) - 1, d || 1);
+    if (!isValidDateISO(str)) return new Date(new Date().setHours(0, 0, 0, 0));
+    const [y, m, d] = str.split('-').map(Number);
+    return new Date(y, m - 1, d);
   }
   function shiftDateISO(baseStr, deltaDays) {
     const d = parseDateISO(baseStr);
@@ -40,7 +45,7 @@
     return formatDateISO(d);
   }
   function addDaysStr(days) { return shiftDateISO(todayKey(), days); }
-  function currentMonthKey(dateStr = todayKey()) { return dateStr.slice(0, 7); }
+  function currentMonthKey(dateStr = todayKey()) { return (isValidDateISO(dateStr) ? dateStr : todayKey()).slice(0, 7); }
   function shiftMonthKey(ym, deltaMonths) {
     const [y, m] = ym.split('-').map(Number);
     const d = new Date(y, m - 1 + deltaMonths, 1);
@@ -50,7 +55,36 @@
     return String(acc || '').trim().toLowerCase().slice(0, 40);
   }
 
-  // SHA-256 Password Hashing (works over HTTPS / localhost via SubtleCrypto + pure JS fallback)
+  // Safe localStorage wrapper (prevents QuotaExceededError / Safari Private crashes)
+  let memoryVaultFallback = null;
+  function safeStorageGet(key) {
+    try { return localStorage.getItem(key); } catch { return null; }
+  }
+  function safeStorageSet(key, val) {
+    try { localStorage.setItem(key, val); return true; } catch { return false; }
+  }
+  function safeStorageRemove(key) {
+    try { localStorage.removeItem(key); } catch {}
+  }
+
+  // Modern UTF-8 Base64 (replaces deprecated unescape/escape)
+  function encodeB64Json(obj) {
+    try {
+      const bytes = new TextEncoder().encode(JSON.stringify(obj));
+      let bin = '';
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin);
+    } catch { return ''; }
+  }
+  function decodeB64Json(str) {
+    try {
+      const bin = atob(str);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return JSON.parse(new TextDecoder().decode(bytes));
+    } catch { return null; }
+  }
+
   async function hashPassword(account, password) {
     const msg = `shixu::v1::${normalizeAccount(account)}::${String(password || '')}`;
     if (window.crypto && window.crypto.subtle) {
@@ -68,8 +102,8 @@
   const state = {
     mode: 'auto', // 'server' | 'supabase' | 'local'
     userId: '',
-    authMode: 'login', // 'login' | 'register'
-    theme: localStorage.getItem('shixu_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
+    authMode: 'login',
+    theme: safeStorageGet('shixu_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
     activeTab: 'today',
     selectedDate: todayKey(),
     viewMonth: currentMonthKey(),
@@ -83,6 +117,7 @@
     focus: {
       presetMin: 25,
       remainingSec: 25 * 60,
+      endAt: null, // wall-clock ms timestamp for background accuracy
       running: false,
       label: '专注学习',
       timerId: null
@@ -102,7 +137,9 @@
   const hudPill = document.getElementById('hud-pill');
   const hudDot = document.getElementById('hud-dot');
   const hudText = document.getElementById('hud-text');
+  const hudAction = document.getElementById('hud-action');
   const sheetBackdrop = document.getElementById('sheet-backdrop');
+  const sheetPanel = document.getElementById('sheet-panel');
   const sheetContent = document.getElementById('sheet-content');
   const importBackupInput = document.getElementById('import-backup-input');
 
@@ -115,9 +152,9 @@
   }
 
   function daysUntil(dateStr) {
+    if (!isValidDateISO(dateStr)) return 0;
     const now = parseDateISO(todayKey());
     const target = parseDateISO(dateStr);
-    if (Number.isNaN(target.getTime())) return 0;
     return Math.max(0, Math.ceil((target.getTime() - now.getTime()) / 86400000));
   }
 
@@ -152,7 +189,8 @@
   }
 
   function formatTimer(sec) {
-    return `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+    const safe = Math.max(0, Math.ceil(sec));
+    return `${String(Math.floor(safe / 60)).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`;
   }
 
   function genId(prefix) { return `${prefix}_${Math.random().toString(36).slice(2, 10)}`; }
@@ -181,34 +219,72 @@
     return { list, done, total, pct };
   }
 
-  function encodeB64Json(obj) {
-    try { return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); } catch { return ''; }
-  }
-  function decodeB64Json(str) {
-    try { return JSON.parse(decodeURIComponent(escape(atob(str)))); } catch { return null; }
+  // Real consecutive-day streak computation from actual completedDates
+  function computeRealStreak(tasks) {
+    const completedDaySet = new Set();
+    for (const t of tasks || []) {
+      for (const d of t.completedDates || []) {
+        if (isValidDateISO(d)) completedDaySet.add(d);
+      }
+    }
+    if (completedDaySet.size === 0) return 0;
+    let cursor = todayKey();
+    if (!completedDaySet.has(cursor)) {
+      const yest = shiftDateISO(cursor, -1);
+      if (!completedDaySet.has(yest)) return 0;
+      cursor = yest;
+    }
+    let streak = 0;
+    while (completedDaySet.has(cursor)) {
+      streak++;
+      cursor = shiftDateISO(cursor, -1);
+    }
+    return streak;
   }
 
-  function ringSVG(pct, size, strokeWidth, color) {
+  function ringSVG(pct, size, strokeWidth, color, extraId = '') {
     const r = (size - strokeWidth) / 2;
     const c = 2 * Math.PI * r;
     const offset = c * (1 - Math.min(100, Math.max(0, pct)) / 100);
     return `
       <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
         <circle class="ring-track" cx="${size / 2}" cy="${size / 2}" r="${r}" stroke-width="${strokeWidth}" />
-        <circle class="ring-fill" cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="${color}" stroke-width="${strokeWidth}"
-          stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}" />
+        <circle ${extraId ? `id="${extraId}"` : ''} class="ring-fill" cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="${color}" stroke-width="${strokeWidth}"
+          stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}" data-circumference="${c.toFixed(2)}" />
       </svg>
     `;
   }
 
+  // Floating HUD Pill with optional Undo Action
   let hudTimer = null;
-  function showHud(text, dotColor = 'var(--green)') {
+  let hudActionHandler = null;
+  function showHud(text, dotColor = 'var(--green)', actionOpts = null) {
     hudText.textContent = text;
     hudDot.style.background = dotColor;
+    if (actionOpts && typeof actionOpts.onClick === 'function') {
+      hudAction.textContent = actionOpts.label || '撤销';
+      hudAction.classList.remove('hidden');
+      hudPill.classList.add('has-action');
+      hudActionHandler = actionOpts.onClick;
+    } else {
+      hudAction.classList.add('hidden');
+      hudPill.classList.remove('has-action');
+      hudActionHandler = null;
+    }
     hudPill.classList.add('is-visible');
     clearTimeout(hudTimer);
-    hudTimer = setTimeout(() => hudPill.classList.remove('is-visible'), 2500);
+    hudTimer = setTimeout(() => {
+      hudPill.classList.remove('is-visible');
+      hudActionHandler = null;
+    }, actionOpts ? 4200 : 2400);
   }
+
+  hudAction.addEventListener('click', () => {
+    const fn = hudActionHandler;
+    hudActionHandler = null;
+    hudPill.classList.remove('is-visible');
+    if (fn) fn();
+  });
 
   async function copyText(str, okMsg) {
     try {
@@ -228,19 +304,23 @@
   }
 
   // =========================================================================
-  // Resilient IndexedDB Mirror + Permanent Local Vault (Never loses data on updates)
+  // Resilient IndexedDB Mirror + Permanent Local Vault
   // =========================================================================
 
   function openVaultDB() {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       if (!window.indexedDB) return resolve(null);
-      const req = indexedDB.open(IDB_NAME, 1);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
+      try {
+        const req = indexedDB.open(IDB_NAME, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      } catch {
+        resolve(null);
+      }
     });
   }
 
@@ -254,9 +334,7 @@
         req.onsuccess = () => resolve(req.result || null);
         req.onerror = () => resolve(null);
       });
-    } catch {
-      return null;
-    }
+    } catch { return null; }
   }
 
   async function idbSet(key, val) {
@@ -289,7 +367,7 @@
     if (!raw || typeof raw !== 'object') return createEmptyStore();
     const s = {
       schemaVersion: 4,
-      lastRolloverDate: raw.lastRolloverDate || todayKey(),
+      lastRolloverDate: isValidDateISO(raw.lastRolloverDate) ? raw.lastRolloverDate : todayKey(),
       users: Array.isArray(raw.users) ? raw.users : [],
       categories: Array.isArray(raw.categories) ? raw.categories : [],
       exams: Array.isArray(raw.exams) ? raw.exams : [],
@@ -302,45 +380,36 @@
     }
     for (const t of s.tasks) {
       if (!t.category) t.category = t.subject || '未分组';
-      if (!Array.isArray(t.completedDates)) t.completedDates = t.done ? [t.date || todayKey()] : [];
+      if (!isValidDateISO(t.date)) t.date = todayKey();
+      if (!Array.isArray(t.completedDates)) t.completedDates = t.done ? [t.date] : [];
     }
     return s;
   }
 
   async function initPermanentStorage() {
-    // 1. Restore local vault from permanent key -> IndexedDB mirror -> legacy keys (non-destructive)
     let raw = null;
-    try { raw = JSON.parse(localStorage.getItem(PERMANENT_VAULT_KEY) || 'null'); } catch {}
-
-    if (!raw) {
-      const fromIdb = await idbGet('vault');
-      if (fromIdb) raw = fromIdb;
-    }
-
+    try { raw = JSON.parse(safeStorageGet(PERMANENT_VAULT_KEY) || 'null'); } catch {}
+    if (!raw) raw = await idbGet('vault');
     if (!raw) {
       for (const legacyKey of LEGACY_VAULT_KEYS) {
         try {
-          const legacy = JSON.parse(localStorage.getItem(legacyKey) || 'null');
-          if (legacy && Array.isArray(legacy.users) && legacy.users.length > 0) {
-            raw = legacy;
-            break;
-          }
+          const legacy = JSON.parse(safeStorageGet(legacyKey) || 'null');
+          if (legacy && Array.isArray(legacy.users) && legacy.users.length > 0) { raw = legacy; break; }
         } catch {}
       }
     }
-
     const migrated = migrateStore(raw);
-    localStorage.setItem(PERMANENT_VAULT_KEY, JSON.stringify(migrated));
+    memoryVaultFallback = migrated;
+    safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(migrated));
     idbSet('vault', migrated);
 
-    // 2. Restore remembered login session (localStorage -> IndexedDB -> legacy session key)
     let session = null;
-    try { session = JSON.parse(localStorage.getItem(PERMANENT_SESSION_KEY) || 'null'); } catch {}
+    try { session = JSON.parse(safeStorageGet(PERMANENT_SESSION_KEY) || 'null'); } catch {}
     if (!session) session = await idbGet('session');
     if (session && session.userId) {
       state.userId = session.userId;
     } else {
-      const legacyUid = localStorage.getItem('shixu_raw_user_id');
+      const legacyUid = safeStorageGet('shixu_raw_user_id');
       if (legacyUid && migrated.users.some((u) => u.id === legacyUid)) {
         state.userId = legacyUid;
         saveSession(legacyUid);
@@ -352,39 +421,43 @@
     state.userId = userId || '';
     if (userId) {
       const sess = { userId, account: normalizeAccount(account), savedAt: Date.now() };
-      localStorage.setItem(PERMANENT_SESSION_KEY, JSON.stringify(sess));
+      safeStorageSet(PERMANENT_SESSION_KEY, JSON.stringify(sess));
       idbSet('session', sess);
     } else {
-      localStorage.removeItem(PERMANENT_SESSION_KEY);
+      safeStorageRemove(PERMANENT_SESSION_KEY);
       idbSet('session', null);
     }
   }
 
   function getLocalStore() {
     let s = null;
-    try { s = JSON.parse(localStorage.getItem(PERMANENT_VAULT_KEY) || 'null'); } catch {}
+    try { s = JSON.parse(safeStorageGet(PERMANENT_VAULT_KEY) || 'null'); } catch {}
+    if (!s && memoryVaultFallback) s = memoryVaultFallback;
     s = migrateStore(s);
     const today = todayKey();
     if (s.lastRolloverDate !== today) {
       for (const u of s.users) u.focusMinutesToday = 0;
       s.lastRolloverDate = today;
-      localStorage.setItem(PERMANENT_VAULT_KEY, JSON.stringify(s));
+      memoryVaultFallback = s;
+      safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
       idbSet('vault', s);
     }
     return s;
   }
 
   function saveLocalStore(s, toastMsg) {
-    localStorage.setItem(PERMANENT_VAULT_KEY, JSON.stringify(s));
+    memoryVaultFallback = s;
+    safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
     idbSet('vault', s);
     if (bc) bc.postMessage({ type: 'sync', toastMsg, fromUserId: state.userId });
     if (state.mode === 'supabase' && state.userId) {
       pushAccountToSupabase(s, state.userId).catch(() => {});
+      pushUserGroupsToSupabase(s, state.userId).catch(() => {});
     }
   }
 
   // =========================================================================
-  // Zero-Cost Supabase Cloud Sync Adapter (Activates automatically when configured)
+  // Supabase Zero-Cost Cloud Sync Adapter (Accounts + Study Groups)
   // =========================================================================
 
   function getSupabaseConfig() {
@@ -415,6 +488,7 @@
   async function pushAccountToSupabase(s, userId) {
     const user = s.users.find((u) => u.id === userId);
     if (!user || !user.account) return;
+    const userTasks = s.tasks.filter((t) => t.userId === user.id);
     const row = {
       account: user.account,
       user_id: user.id,
@@ -422,13 +496,13 @@
       avatar: user.avatar,
       color: user.color,
       password_hash: user.passwordHash || '',
-      streak: user.streak || 0,
+      streak: computeRealStreak(userTasks),
       focus_minutes_today: user.focusMinutesToday || 0,
       last_rollover_date: s.lastRolloverDate || todayKey(),
       payload: {
         categories: s.categories.filter((c) => c.userId === user.id),
         exams: s.exams.filter((e) => e.userId === user.id),
-        tasks: s.tasks.filter((t) => t.userId === user.id)
+        tasks: userTasks
       },
       updated_at: Date.now()
     };
@@ -440,6 +514,34 @@
     state.lastSyncedAt = Date.now();
   }
 
+  async function pushUserGroupsToSupabase(s, userId) {
+    const myGroups = s.groups.filter((g) => g.memberIds.includes(userId));
+    const user = s.users.find((u) => u.id === userId);
+    if (!user) return;
+    const today = todayKey();
+    const mySt = getDayStats(s.tasks.filter((t) => t.userId === userId), today);
+    for (const g of myGroups) {
+      const snaps = { ...(g.memberSnapshots || {}) };
+      snaps[userId] = {
+        id: user.id, account: user.account, name: user.name, avatar: user.avatar, color: user.color,
+        streak: computeRealStreak(s.tasks.filter((t) => t.userId === userId)),
+        done: mySt.done, total: mySt.total, pct: mySt.pct, date: today
+      };
+      g.memberSnapshots = snaps;
+      await sbFetch('shixu_groups?on_conflict=id', {
+        method: 'POST',
+        headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+        body: JSON.stringify({
+          id: g.id, invite_code: g.inviteCode, name: g.name, exam_name: g.examName,
+          target_date: g.targetDate, notice: g.notice, owner_id: g.ownerId,
+          member_ids: g.memberIds, member_snapshots: snaps,
+          feeds: s.feeds.filter((f) => f.groupId === g.id).slice(-40),
+          updated_at: Date.now()
+        })
+      });
+    }
+  }
+
   async function pullAccountFromSupabase(account, passwordHash) {
     const rows = await sbFetch(`shixu_accounts?account=eq.${encodeURIComponent(normalizeAccount(account))}&select=*`);
     if (!rows || !rows.length) return null;
@@ -448,7 +550,7 @@
       throw new Error('密码不正确，请重试');
     }
     const s = getLocalStore();
-    let user = s.users.find((u) => u.account === row.account);
+    const existing = s.users.find((u) => u.account === row.account);
     const hydratedUser = {
       id: row.user_id,
       account: row.account,
@@ -458,23 +560,43 @@
       passwordHash: row.password_hash,
       streak: row.streak || 0,
       focusMinutesToday: row.last_rollover_date === todayKey() ? (row.focus_minutes_today || 0) : 0,
-      createdAt: user ? user.createdAt : Date.now()
+      createdAt: existing ? existing.createdAt : Date.now()
     };
-    if (user) Object.assign(user, hydratedUser);
+    if (existing) Object.assign(existing, hydratedUser);
     else s.users.push(hydratedUser);
 
     const p = row.payload || {};
     s.categories = s.categories.filter((c) => c.userId !== hydratedUser.id).concat(p.categories || []);
     s.exams = s.exams.filter((e) => e.userId !== hydratedUser.id).concat(p.exams || []);
     s.tasks = s.tasks.filter((t) => t.userId !== hydratedUser.id).concat(p.tasks || []);
-    localStorage.setItem(PERMANENT_VAULT_KEY, JSON.stringify(s));
+
+    // Also pull user's cloud study groups
+    const allGroups = await sbFetch('shixu_groups?select=*').catch(() => []);
+    for (const rg of allGroups || []) {
+      const mIds = Array.isArray(rg.member_ids) ? rg.member_ids : [];
+      if (!mIds.includes(hydratedUser.id)) continue;
+      const idx = s.groups.findIndex((x) => x.id === rg.id);
+      const localGrp = {
+        id: rg.id, inviteCode: rg.invite_code, name: rg.name, examName: rg.exam_name,
+        targetDate: rg.target_date, notice: rg.notice, ownerId: rg.owner_id,
+        memberIds: mIds, memberSnapshots: rg.member_snapshots || {}, createdAt: rg.updated_at || Date.now()
+      };
+      if (idx === -1) s.groups.push(localGrp);
+      else s.groups[idx] = localGrp;
+      if (Array.isArray(rg.feeds)) {
+        s.feeds = s.feeds.filter((f) => f.groupId !== rg.id).concat(rg.feeds);
+      }
+    }
+
+    memoryVaultFallback = s;
+    safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
     idbSet('vault', s);
     state.lastSyncedAt = Date.now();
     return hydratedUser;
   }
 
   // =========================================================================
-  // Local Data Operations (Parity with Server Mode)
+  // Local Data Operations (Full Parity with Server Mode)
   // =========================================================================
 
   function ensureLocalCategory(s, userId, name, color) {
@@ -498,7 +620,10 @@
     const s = getLocalStore();
     const user = userId ? s.users.find((u) => u.id === userId) : null;
     const today = todayKey();
-    const safeUsers = s.users.map((u) => ({ id: u.id, account: u.account, name: u.name, avatar: u.avatar, color: u.color, streak: u.streak }));
+    const safeUsers = s.users.map((u) => {
+      const uTasks = s.tasks.filter((t) => t.userId === u.id);
+      return { id: u.id, account: u.account, name: u.name, avatar: u.avatar, color: u.color, streak: computeRealStreak(uTasks) };
+    });
     if (!user) {
       return { today, user: null, users: safeUsers, categories: [], tasks: [], exams: [], groups: [] };
     }
@@ -520,13 +645,24 @@
     const groups = s.groups
       .filter((g) => g.memberIds.includes(user.id))
       .map((g) => {
-        const members = g.memberIds
-          .map((uid) => s.users.find((u) => u.id === uid))
-          .filter(Boolean)
-          .map((u) => {
-            const st = getDayStats(s.tasks.filter((t) => t.userId === u.id), today);
-            return { id: u.id, account: u.account, name: u.name, avatar: u.avatar, color: u.color, streak: u.streak, done: st.done, total: st.total, pct: st.pct };
-          });
+        const members = g.memberIds.map((uid) => {
+          const localU = s.users.find((u) => u.id === uid);
+          if (localU) {
+            const uTasks = s.tasks.filter((t) => t.userId === uid);
+            const st = getDayStats(uTasks, today);
+            return {
+              id: localU.id, account: localU.account, name: localU.name, avatar: localU.avatar, color: localU.color,
+              streak: computeRealStreak(uTasks), done: st.done, total: st.total, pct: st.pct
+            };
+          }
+          const snap = g.memberSnapshots && g.memberSnapshots[uid];
+          if (snap) {
+            const sameDay = snap.date === today;
+            return { ...snap, done: sameDay ? snap.done : 0, pct: sameDay ? snap.pct : 0 };
+          }
+          return null;
+        }).filter(Boolean);
+
         const totalTasks = members.reduce((a, m) => a + m.total, 0);
         const doneTasks = members.reduce((a, m) => a + m.done, 0);
         const feeds = s.feeds
@@ -534,7 +670,9 @@
           .sort((a, b) => b.createdAt - a.createdAt)
           .slice(0, 30)
           .map((f) => {
-            const u = s.users.find((x) => x.id === f.userId) || { name: '成员', avatar: '学', color: '#0071E3' };
+            const u = s.users.find((x) => x.id === f.userId)
+              || (g.memberSnapshots && g.memberSnapshots[f.userId])
+              || { name: '成员', avatar: '学', color: '#0071E3' };
             return { ...f, userName: u.name, userAvatar: u.avatar, userColor: u.color };
           });
         return {
@@ -549,6 +687,7 @@
       });
 
     const { passwordHash, ...safeUser } = user;
+    safeUser.streak = computeRealStreak(tasks);
     return { today, user: safeUser, users: safeUsers, categories, tasks, exams, groups };
   }
 
@@ -589,7 +728,6 @@
     } else {
       user.name = snap.user.name || user.name;
       user.avatar = user.name.slice(0, 1);
-      user.streak = Math.max(user.streak || 0, snap.user.streak || 0);
       if (snap.user.passwordHash) user.passwordHash = snap.user.passwordHash;
     }
 
@@ -604,23 +742,16 @@
       if (!existing) {
         s.tasks.push({ ...t, id: genId('t'), userId: user.id });
       } else {
-        const mergedDates = new Set([...(existing.completedDates || []), ...(t.completedDates || [])]);
-        existing.completedDates = Array.from(mergedDates);
+        existing.completedDates = Array.from(new Set([...(existing.completedDates || []), ...(t.completedDates || [])]));
       }
     }
     for (const g of snap.groups || []) {
       let grp = s.groups.find((x) => x.inviteCode === g.inviteCode);
       if (!grp) {
         grp = {
-          id: genId('g'),
-          name: g.name,
-          inviteCode: g.inviteCode || genInviteCode(),
-          examName: g.examName || '共同目标',
-          targetDate: g.targetDate || addDaysStr(60),
-          notice: g.notice || '每天按计划完成打卡。',
-          ownerId: user.id,
-          memberIds: [user.id],
-          createdAt: Date.now()
+          id: genId('g'), name: g.name, inviteCode: g.inviteCode || genInviteCode(),
+          examName: g.examName || '共同目标', targetDate: g.targetDate || addDaysStr(60),
+          notice: g.notice || '每天按计划完成打卡。', ownerId: user.id, memberIds: [user.id], createdAt: Date.now()
         };
         s.groups.push(grp);
       } else if (!grp.memberIds.includes(user.id)) {
@@ -645,7 +776,7 @@
       const account = normalizeAccount(body.account);
       const name = String(body.name || body.account || '').trim().slice(0, 16);
       const password = String(body.password || '');
-      if (account.length < 2) throw new Error('请输入至少 2 位统一账号（手机号或英文账号）');
+      if (account.length < 2) throw new Error('请输入至少 2 位统一账号');
       if (!name) throw new Error('请输入显示昵称');
       if (password.length < 4) throw new Error('请设置至少 4 位密码');
 
@@ -657,15 +788,9 @@
 
       const passwordHash = await hashPassword(account, password);
       const user = {
-        id: genId('u'),
-        account,
-        name,
-        avatar: name.slice(0, 1),
+        id: genId('u'), account, name, avatar: name.slice(0, 1),
         color: SYSTEM_COLORS[s.users.length % SYSTEM_COLORS.length],
-        passwordHash,
-        streak: 0,
-        focusMinutesToday: 0,
-        createdAt: Date.now()
+        passwordHash, streak: 0, focusMinutesToday: 0, createdAt: Date.now()
       };
       s.users.push(user);
 
@@ -674,15 +799,11 @@
         let grp = s.groups.find((g) => g.inviteCode === code);
         if (!grp && body.sharedGroup && body.sharedGroup.name) {
           grp = {
-            id: genId('g'),
-            name: body.sharedGroup.name,
-            inviteCode: code,
+            id: genId('g'), name: body.sharedGroup.name, inviteCode: code,
             examName: body.sharedGroup.examName || '共同目标',
             targetDate: body.sharedGroup.targetDate || addDaysStr(60),
             notice: body.sharedGroup.notice || '每天按计划完成打卡。',
-            ownerId: user.id,
-            memberIds: [user.id],
-            createdAt: Date.now()
+            ownerId: user.id, memberIds: [user.id], createdAt: Date.now()
           };
           s.groups.push(grp);
         } else if (grp && !grp.memberIds.includes(user.id)) {
@@ -692,7 +813,6 @@
           s.feeds.push({ id: genId('f'), groupId: grp.id, userId: user.id, type: 'join', text: '加入了学习小组', createdAt: Date.now(), likedBy: [] });
         }
       }
-
       saveLocalStore(s);
       return { user };
     }
@@ -713,7 +833,7 @@
         throw new Error(
           state.mode === 'supabase'
             ? '云端未找到该账号，请检查账号或先注册'
-            : '当前设备未找到该账号；若从其他手机换机而来，请点击下方「导入换机备份 / 迁移码」'
+            : '当前设备未找到该账号；若从旧手机换机而来，请点击「导入账户备份文件」'
         );
       }
       if (user.passwordHash && user.passwordHash !== pwdHash) throw new Error('密码不正确，请重试');
@@ -727,8 +847,7 @@
         const checkHash = await hashPassword(snap.user.account, body.password);
         if (checkHash !== snap.user.passwordHash) throw new Error('账户密码验证未通过');
       }
-      const user = mergeSnapshotIntoLocal(snap);
-      return { user };
+      return { user: mergeSnapshotIntoLocal(snap) };
     }
 
     // Categories CRUD
@@ -776,7 +895,17 @@
       return { ok: true };
     }
 
-    // Tasks CRUD
+    // Tasks CRUD + Restore
+    if (method === 'POST' && path === '/api/tasks/restore') {
+      const t = body.task;
+      if (t && t.id && !s.tasks.some((x) => x.id === t.id)) {
+        s.tasks.unshift(t);
+        if (t.category && t.category !== '未分组') ensureLocalCategory(s, t.userId, t.category);
+        saveLocalStore(s);
+      }
+      return { task: t };
+    }
+
     if (method === 'POST' && path === '/api/tasks') {
       const uid = body.userId || state.userId;
       const title = String(body.title || '').trim().slice(0, 60);
@@ -784,18 +913,11 @@
       const categoryName = String(body.category || body.subject || '未分组').trim().slice(0, 18) || '未分组';
       if (categoryName !== '未分组') ensureLocalCategory(s, uid, categoryName, body.categoryColor);
 
-      const taskDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : today;
+      const taskDate = isValidDateISO(body.date) ? body.date : today;
       const task = {
-        id: genId('t'),
-        userId: uid,
-        title,
-        category: categoryName,
-        subject: categoryName,
+        id: genId('t'), userId: uid, title, category: categoryName, subject: categoryName,
         durationMin: Math.min(360, Math.max(5, Number(body.durationMin) || 30)),
-        repeatDaily: Boolean(body.repeatDaily),
-        date: taskDate,
-        completedDates: [],
-        createdAt: Date.now()
+        repeatDaily: Boolean(body.repeatDaily), date: taskDate, completedDates: [], createdAt: Date.now()
       };
       s.tasks.unshift(task);
       saveLocalStore(s);
@@ -806,7 +928,21 @@
     if (tMatch && method === 'PATCH') {
       const task = s.tasks.find((t) => t.id === tMatch[1]);
       if (!task) throw new Error('任务不存在');
-      const targetDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : today;
+
+      if (typeof body.title === 'string' && body.title.trim()) task.title = body.title.trim().slice(0, 60);
+      if (typeof body.category === 'string' && body.category.trim()) {
+        const cat = body.category.trim().slice(0, 18);
+        task.category = cat;
+        task.subject = cat;
+        if (cat !== '未分组') ensureLocalCategory(s, task.userId, cat);
+      }
+      if (typeof body.durationMin === 'number' && body.durationMin >= 5) {
+        task.durationMin = Math.min(360, Math.round(body.durationMin));
+      }
+      if (typeof body.repeatDaily === 'boolean') task.repeatDaily = body.repeatDaily;
+      if (isValidDateISO(body.scheduledDate)) task.date = body.scheduledDate;
+
+      const targetDate = isValidDateISO(body.date) ? body.date : today;
       if (!Array.isArray(task.completedDates)) task.completedDates = [];
       const prev = task.completedDates.includes(targetDate);
       if (typeof body.done === 'boolean') {
@@ -817,7 +953,6 @@
       let toastMsg = null;
       if (!prev && body.done === true && targetDate === today) {
         const u = s.users.find((x) => x.id === task.userId);
-        if (u && u.streak === 0) u.streak = 1;
         const st = getDayStats(s.tasks.filter((t) => t.userId === task.userId), today);
         for (const g of s.groups.filter((gr) => gr.memberIds.includes(task.userId))) {
           const text = st.done === st.total && st.total > 0
@@ -833,23 +968,20 @@
 
     if (tMatch && method === 'DELETE') {
       const idx = s.tasks.findIndex((t) => t.id === tMatch[1]);
-      if (idx !== -1) s.tasks.splice(idx, 1);
+      let removed = null;
+      if (idx !== -1) [removed] = s.tasks.splice(idx, 1);
       saveLocalStore(s);
-      return { ok: true };
+      return { ok: true, removed };
     }
 
-    // Exams
+    // Exams CRUD
     if (method === 'POST' && path === '/api/exams') {
       const uid = body.userId || state.userId;
       if (body.pinned !== false) for (const e of s.exams) if (e.userId === uid) e.pinned = false;
       const exam = {
-        id: genId('ex'),
-        userId: uid,
-        name: String(body.name || '').trim().slice(0, 30),
+        id: genId('ex'), userId: uid, name: String(body.name || '').trim().slice(0, 30),
         tag: String(body.tag || '核心目标').trim().slice(0, 12),
-        startDate: today,
-        targetDate: body.targetDate,
-        color: body.color || '#0071E3',
+        startDate: today, targetDate: body.targetDate, color: body.color || '#0071E3',
         pinned: body.pinned !== false
       };
       s.exams.push(exam);
@@ -861,6 +993,10 @@
     if (eMatch && method === 'PATCH') {
       const ex = s.exams.find((e) => e.id === eMatch[1]);
       if (!ex) throw new Error('目标不存在');
+      if (typeof body.name === 'string' && body.name.trim()) ex.name = body.name.trim().slice(0, 30);
+      if (typeof body.tag === 'string' && body.tag.trim()) ex.tag = body.tag.trim().slice(0, 12);
+      if (isValidDateISO(body.targetDate)) ex.targetDate = body.targetDate;
+      if (typeof body.color === 'string' && body.color) ex.color = body.color;
       if (body.pinned === true) {
         for (const e of s.exams) if (e.userId === ex.userId) e.pinned = false;
         ex.pinned = true;
@@ -888,7 +1024,6 @@
       if (u) {
         const mins = Math.min(240, Math.max(1, Number(body.minutes) || 25));
         u.focusMinutesToday = (u.focusMinutesToday || 0) + mins;
-        if (u.streak === 0) u.streak = 1;
         for (const g of s.groups.filter((gr) => gr.memberIds.includes(u.id))) {
           s.feeds.push({ id: genId('f'), groupId: g.id, userId: u.id, type: 'focus', text: `完成了 ${mins} 分钟沉浸专注「${body.label || '专注学习'}」`, createdAt: Date.now(), likedBy: [] });
         }
@@ -903,15 +1038,11 @@
       let inviteCode = genInviteCode();
       while (s.groups.some((g) => g.inviteCode === inviteCode)) inviteCode = genInviteCode();
       const group = {
-        id: genId('g'),
-        name: String(body.name || '').trim().slice(0, 24),
-        inviteCode,
+        id: genId('g'), name: String(body.name || '').trim().slice(0, 24), inviteCode,
         examName: String(body.examName || '共同备考目标').trim().slice(0, 24),
         targetDate: body.targetDate || addDaysStr(60),
         notice: String(body.notice || '每天按计划完成打卡，互相监督。').trim().slice(0, 60),
-        ownerId,
-        memberIds: [ownerId],
-        createdAt: Date.now()
+        ownerId, memberIds: [ownerId], createdAt: Date.now()
       };
       s.groups.push(group);
       s.feeds.push({ id: genId('f'), groupId: group.id, userId: ownerId, type: 'join', text: `创建了学习小组「${group.name}」，邀请码 ${inviteCode}`, createdAt: Date.now(), likedBy: [] });
@@ -923,24 +1054,36 @@
       const uid = body.userId || state.userId;
       const code = String(body.inviteCode || '').trim().toUpperCase();
       let grp = s.groups.find((g) => g.inviteCode === code);
+
+      if (!grp && state.mode === 'supabase') {
+        const remote = await sbFetch(`shixu_groups?invite_code=eq.${encodeURIComponent(code)}&select=*`).catch(() => []);
+        if (remote && remote.length) {
+          const rg = remote[0];
+          grp = {
+            id: rg.id, inviteCode: rg.invite_code, name: rg.name, examName: rg.exam_name,
+            targetDate: rg.target_date, notice: rg.notice, ownerId: rg.owner_id,
+            memberIds: Array.isArray(rg.member_ids) ? rg.member_ids : [],
+            memberSnapshots: rg.member_snapshots || {}, createdAt: rg.updated_at || Date.now()
+          };
+          s.groups.push(grp);
+          if (Array.isArray(rg.feeds)) s.feeds.push(...rg.feeds);
+        }
+      }
+
       if (!grp && body.sharedGroup && body.sharedGroup.name) {
         grp = {
-          id: genId('g'),
-          name: body.sharedGroup.name,
-          inviteCode: code || genInviteCode(),
+          id: genId('g'), name: body.sharedGroup.name, inviteCode: code || genInviteCode(),
           examName: body.sharedGroup.examName || '共同备考目标',
           targetDate: body.sharedGroup.targetDate || addDaysStr(60),
           notice: body.sharedGroup.notice || '每天按计划完成打卡。',
-          ownerId: uid,
-          memberIds: [uid],
-          createdAt: Date.now()
+          ownerId: uid, memberIds: [uid], createdAt: Date.now()
         };
         s.groups.push(grp);
         s.feeds.push({ id: genId('f'), groupId: grp.id, userId: uid, type: 'join', text: `通过邀请链接加入了「${grp.name}」`, createdAt: Date.now(), likedBy: [] });
         saveLocalStore(s);
         return { group: grp };
       }
-      if (!grp) throw new Error('未找到该邀请码对应的学习小组，请先创建小组或确认邀请码');
+      if (!grp) throw new Error('未找到该邀请码对应的学习小组，请确认邀请码');
       if (!grp.memberIds.includes(uid)) {
         grp.memberIds.push(uid);
         s.feeds.push({ id: genId('f'), groupId: grp.id, userId: uid, type: 'join', text: `加入小组，共同冲刺「${grp.examName}」`, createdAt: Date.now(), likedBy: [] });
@@ -949,11 +1092,31 @@
       return { group: grp };
     }
 
+    const gfMatch = path.match(/^\/api\/groups\/([^/]+)\/feed$/);
+    if (gfMatch && method === 'POST') {
+      const text = String(body.text || '').trim().slice(0, 100);
+      if (!text) throw new Error('请输入动态内容');
+      s.feeds.push({ id: genId('f'), groupId: gfMatch[1], userId: body.userId || state.userId, type: 'note', text, createdAt: Date.now(), likedBy: [] });
+      saveLocalStore(s);
+      return { ok: true };
+    }
+
+    const glMatch = path.match(/^\/api\/groups\/([^/]+)\/leave$/);
+    if (glMatch && method === 'POST') {
+      const grp = s.groups.find((g) => g.id === glMatch[1]);
+      if (grp) {
+        grp.memberIds = grp.memberIds.filter((id) => id !== (body.userId || state.userId));
+        if (grp.memberIds.length === 0) s.groups = s.groups.filter((g) => g.id !== grp.id);
+        saveLocalStore(s);
+      }
+      return { ok: true };
+    }
+
     const nMatch = path.match(/^\/api\/groups\/([^/]+)\/nudge$/);
     if (nMatch && method === 'POST') {
       const fromUser = s.users.find((u) => u.id === body.fromUserId);
-      const toUser = s.users.find((u) => u.id === body.toUserId);
-      if (!fromUser || !toUser) throw new Error('成员不存在');
+      const toUser = s.users.find((u) => u.id === body.toUserId) || { name: '组员' };
+      if (!fromUser) throw new Error('成员不存在');
       const kind = body.kind === 'cheer' ? 'cheer' : 'nudge';
       const text = kind === 'cheer' ? `给 ${toUser.name} 送上了鼓励` : `拍了拍 ${toUser.name}：该学习打卡啦`;
       s.feeds.push({ id: genId('f'), groupId: nMatch[1], userId: fromUser.id, type: kind, text, createdAt: Date.now(), likedBy: [] });
@@ -994,7 +1157,7 @@
 
   function applyTheme(theme) {
     state.theme = theme;
-    localStorage.setItem('shixu_theme', theme);
+    safeStorageSet('shixu_theme', theme);
     document.documentElement.setAttribute('data-theme', theme);
     const metaTheme = document.getElementById('meta-theme-color');
     const metaStatus = document.getElementById('meta-status-bar');
@@ -1004,7 +1167,13 @@
     document.getElementById('theme-icon-moon').classList.toggle('hidden', theme !== 'dark');
   }
 
+  // =========================================================================
+  // Native iOS Bottom Sheet with 1:1 Touch Swipe-Down to Dismiss + Esc Key
+  // =========================================================================
+
   function openSheet(html) {
+    sheetPanel.style.transform = '';
+    sheetPanel.classList.remove('is-dragging');
     sheetContent.innerHTML = html;
     sheetBackdrop.classList.remove('hidden');
     sheetBackdrop.setAttribute('aria-hidden', 'false');
@@ -1012,6 +1181,8 @@
   }
 
   function closeSheet() {
+    sheetPanel.style.transform = '';
+    sheetPanel.classList.remove('is-dragging');
     sheetBackdrop.classList.remove('is-open');
     sheetBackdrop.setAttribute('aria-hidden', 'true');
     setTimeout(() => {
@@ -1019,9 +1190,46 @@
     }, 320);
   }
 
-  sheetBackdrop.addEventListener('click', (e) => {
-    if (e.target === sheetBackdrop) closeSheet();
+  sheetBackdrop.addEventListener('click', (e) => { if (e.target === sheetBackdrop) closeSheet(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && sheetBackdrop.classList.contains('is-open')) closeSheet();
   });
+
+  // Real iOS Sheet Touch Swipe-Down Gesture on grabber bar
+  (function initSheetDragGesture() {
+    const grabber = sheetPanel.querySelector('.sheet-grabber-wrap');
+    if (!grabber) return;
+    let startY = 0;
+    let currentY = 0;
+    let dragging = false;
+
+    grabber.addEventListener('touchstart', (e) => {
+      if (!e.touches || !e.touches[0]) return;
+      startY = e.touches[0].clientY;
+      currentY = 0;
+      dragging = true;
+      sheetPanel.classList.add('is-dragging');
+    }, { passive: true });
+
+    grabber.addEventListener('touchmove', (e) => {
+      if (!dragging || !e.touches || !e.touches[0]) return;
+      const dy = Math.max(0, e.touches[0].clientY - startY);
+      currentY = dy;
+      sheetPanel.style.transform = `translateY(${dy}px)`;
+    }, { passive: true });
+
+    grabber.addEventListener('touchend', () => {
+      if (!dragging) return;
+      dragging = false;
+      sheetPanel.classList.remove('is-dragging');
+      if (currentY > 88) closeSheet();
+      else sheetPanel.style.transform = '';
+    });
+  })();
+
+  // =========================================================================
+  // Bootstrap & Data Refresh (Preserves scroll position, avoids mid-animation flash)
+  // =========================================================================
 
   async function loadBootstrap(silent = false) {
     if (state.mode === 'auto') {
@@ -1048,7 +1256,6 @@
         if (!silent) showHud(err.message || '连接服务失败', 'var(--red)');
       }
     } else {
-      // If Supabase configured and we have a remembered account, silently pull latest cloud snapshot
       if (state.mode === 'supabase' && state.userId && !silent) {
         const localUser = getLocalStore().users.find((u) => u.id === state.userId);
         if (localUser && localUser.account) {
@@ -1061,9 +1268,7 @@
 
   function applyBootstrapData(data, animate) {
     state.data = data;
-    if (data.user) {
-      saveSession(data.user.id, data.user.account);
-    }
+    if (data.user) saveSession(data.user.id, data.user.account);
     if (!state.activeGroupId || !data.groups.some((g) => g.id === state.activeGroupId)) {
       state.activeGroupId = data.groups[0] ? data.groups[0].id : null;
     }
@@ -1294,13 +1499,14 @@ Script.complete();`;
   }
 
   // =========================================================================
-  // Views
+  // View Rendering (Scroll-Preserving, Zero-Flicker)
   // =========================================================================
 
   function renderView(animate = true) {
     if (!state.data) return;
     syncHeader();
 
+    const savedScroll = mainScroll.scrollTop;
     if (animate) {
       viewContainer.style.animation = 'none';
       void viewContainer.offsetWidth;
@@ -1308,7 +1514,6 @@ Script.complete();`;
     }
 
     if (!state.data.user) {
-      // Default to register if no users exist locally yet, otherwise login
       if (state.data.users.length === 0 && state.authMode === 'login' && !state.pendingRestore) {
         state.authMode = 'register';
       }
@@ -1317,21 +1522,37 @@ Script.complete();`;
       return;
     }
 
+    const focusCapsule = state.focus.running ? `
+      <div class="focus-live-bar" data-action="open-focus" role="button" aria-label="展开正在运行的专注计时">
+        <div class="focus-live-left">
+          <span class="focus-live-dot"></span>
+          <span class="focus-live-label">专注进行中 · ${esc(state.focus.label)}</span>
+        </div>
+        <span id="live-focus-bar-clock" class="focus-live-time">${formatTimer(getFocusRemainingSec())}</span>
+      </div>
+    ` : '';
+
     if (state.activeTab === 'today') {
-      viewContainer.innerHTML = buildTodayView();
+      viewContainer.innerHTML = focusCapsule + buildTodayView();
     } else if (state.activeTab === 'groups') {
-      viewContainer.innerHTML = buildGroupsView();
+      viewContainer.innerHTML = focusCapsule + buildGroupsView();
+      bindGroupFeedComposer();
     } else if (state.activeTab === 'exams') {
-      viewContainer.innerHTML = buildExamsView();
+      viewContainer.innerHTML = focusCapsule + buildExamsView();
     } else if (state.activeTab === 'desktop') {
-      viewContainer.innerHTML = buildDesktopView();
-      const previewImg = document.getElementById('wallpaper-preview-img');
-      if (previewImg) previewImg.src = renderLockscreenCanvasDataUrl();
+      viewContainer.innerHTML = focusCapsule + buildDesktopView();
+      // Render lightweight preview asynchronously inside rAF so tab switch is silky 60fps
+      requestAnimationFrame(() => {
+        const previewImg = document.getElementById('wallpaper-preview-img');
+        if (previewImg) previewImg.src = renderLockscreenCanvasDataUrl(true);
+      });
       loadScriptableSnippet().then(() => {
         const codeEl = document.getElementById('scriptable-code-preview');
         if (codeEl) codeEl.textContent = state.scriptableCode;
       });
     }
+
+    if (!animate) mainScroll.scrollTop = savedScroll;
   }
 
   function buildUnifiedAuthView() {
@@ -1443,10 +1664,8 @@ Script.complete();`;
           state.pendingRestore = null;
           saveSession(res.user.id, res.user.account);
           await loadBootstrap(false);
-          showHud(`欢迎回来，${res.user.name}！数据已 100% 恢复`);
-        } catch (err) {
-          showHud(err.message, 'var(--red)');
-        }
+          showHud(`欢迎回来，${res.user.name}！数据已完整恢复`);
+        } catch (err) { showHud(err.message, 'var(--red)'); }
       });
     }
 
@@ -1477,9 +1696,7 @@ Script.complete();`;
             await loadBootstrap(false);
             showHud(`欢迎回来，${res.user.name}`);
           }
-        } catch (err) {
-          showHud(err.message, 'var(--red)');
-        }
+        } catch (err) { showHud(err.message, 'var(--red)'); }
       });
     }
 
@@ -1550,7 +1767,7 @@ Script.complete();`;
               <span class="hero-days-unit">天</span>
             </div>
             <div class="hero-progress-meta">
-              <div>备考进度</div>
+              <div>约 ${Math.max(1, Math.ceil(pinned.daysLeft / 7))} 周 · 进度</div>
               <div class="hero-progress-val tabular">${pinned.progress}%</div>
             </div>
           </div>
@@ -1568,24 +1785,25 @@ Script.complete();`;
 
       ${buildTimelineSection(tasks)}
 
+      <!-- Interactive Apple Health Summary Tiles (Tap left for Analytics & Review, right for Focus Timer) -->
       <section class="summary-strip">
-        <div class="card summary-tile">
+        <button class="card summary-tile" data-action="open-analytics" style="text-align:left;">
           <div>
             <div class="summary-label">${sel === todayKey() ? '今日进度' : '当日进度'}</div>
             <div class="summary-value tabular">${dayStats.done} / ${dayStats.total}</div>
-            <div class="summary-sub">已坚持 ${user.streak} 天</div>
+            <div class="summary-sub" style="color:var(--accent);font-weight:500;">连续 ${user.streak} 天 · 复盘 ›</div>
           </div>
           <div class="ring-box">
             ${ringSVG(dayStats.pct, 48, 5, dayStats.pct === 100 && dayStats.total > 0 ? 'var(--green)' : 'var(--accent)')}
             <span class="ring-center">${dayStats.pct}%</span>
           </div>
-        </div>
+        </button>
 
         <button class="card summary-tile" data-action="open-focus" style="text-align:left;">
           <div>
             <div class="summary-label">今日专注</div>
             <div class="summary-value tabular">${user.focusMinutesToday || 0}<span style="font-size:13px;font-weight:500;margin-left:2px;">分</span></div>
-            <div class="summary-sub" style="color:var(--accent);font-weight:500;">开启专注计时 ›</div>
+            <div class="summary-sub" style="color:var(--accent);font-weight:500;">${state.focus.running ? '计时运行中 ›' : '开启专注计时 ›'}</div>
           </div>
           <div class="ring-box">
             ${ringSVG(Math.min(100, Math.round(((user.focusMinutesToday || 0) / 180) * 100)), 48, 5, 'var(--green)')}
@@ -1621,17 +1839,18 @@ Script.complete();`;
                 ${grp.items.map((t) => {
                   const done = isTaskDoneOnDate(t, sel);
                   return `
-                    <div class="task-row ${done ? 'is-done' : ''}">
+                    <div class="task-row ${done ? 'is-done' : ''}" data-task-row="${t.id}">
                       <button class="task-check-btn" data-action="toggle-task" data-id="${t.id}" aria-label="${done ? '取消完成' : '标记完成'}">
                         <svg class="task-check-svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
                           <path d="M4.5 10.5l3.6 3.6 7.4-7.8"/>
                         </svg>
                       </button>
-                      <button class="task-main" data-action="toggle-task" data-id="${t.id}">
+                      <button class="task-main" data-action="edit-task" data-id="${t.id}">
                         <div class="task-title">${esc(t.title)}</div>
                         <div class="task-meta">
                           <span class="tabular">${t.durationMin} 分钟</span>
                           ${t.repeatDaily ? '<span>· 每日重复</span>' : ''}
+                          <span class="task-row-edit-hint">· 点击编辑</span>
                         </div>
                       </button>
                       <button class="task-delete-btn" data-action="delete-task" data-id="${t.id}" aria-label="删除任务" title="删除">
@@ -1649,7 +1868,7 @@ Script.complete();`;
       ` : `
         <section class="card empty-box">
           <div style="font-size:15px;font-weight:600;color:var(--text-primary);">${getRelativeDayTitle(sel)}暂无安排</div>
-          <p style="font-size:12px;margin:6px 0 14px;">你可以先自定义任务大标题（如专业课、数学、英语），再添加当日或每日重复任务。</p>
+          <p style="font-size:12px;margin:6px 0 14px;">先自定义任务大标题（如专业课、数学、英语），再安排当日或每日重复任务。</p>
           <div style="display:flex;justify-content:center;gap:8px;">
             <button class="btn-secondary btn-sm" data-action="open-manage-categories">自定义大标题</button>
             <button class="btn-primary btn-sm" data-action="open-add-task">+ 添加任务</button>
@@ -1714,9 +1933,10 @@ Script.complete();`;
               <span class="invite-code-label">小组邀请码</span>
               <span class="invite-code-val">${esc(activeGroup.inviteCode)}</span>
             </div>
-            <button class="btn-primary btn-sm" data-action="copy-invite" data-group-id="${esc(activeGroup.id)}">
-              复制微信邀请链接
-            </button>
+            <div style="display:flex;gap:6px;">
+              <button class="btn-secondary btn-sm" data-action="leave-group" data-group-id="${esc(activeGroup.id)}">退组</button>
+              <button class="btn-primary btn-sm" data-action="copy-invite" data-group-id="${esc(activeGroup.id)}">复制邀请链接</button>
+            </div>
           </div>
         </section>
 
@@ -1745,6 +1965,11 @@ Script.complete();`;
           <h2 class="section-title">小组打卡动态</h2>
         </div>
 
+        <form id="form-group-feed" class="card feed-composer" data-group-id="${esc(activeGroup.id)}">
+          <input id="input-group-feed" class="feed-composer-input" type="text" maxlength="100" placeholder="发一条学习心得或打卡状态给组员…" />
+          <button type="submit" class="btn-primary btn-sm">发布</button>
+        </form>
+
         <section class="feed-list">
           ${activeGroup.feeds.length ? activeGroup.feeds.map((f) => {
             const liked = (f.likedBy || []).includes(user.id);
@@ -1765,7 +1990,7 @@ Script.complete();`;
               </article>
             `;
           }).join('') : `
-            <div class="card empty-box">还没有打卡记录，完成今日任务后会实时出现在这里。</div>
+            <div class="card empty-box">还没有打卡记录，完成今日任务或发一条状态吧。</div>
           `}
         </section>
       ` : `
@@ -1783,6 +2008,26 @@ Script.complete();`;
     `;
   }
 
+  function bindGroupFeedComposer() {
+    const form = document.getElementById('form-group-feed');
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('input-group-feed');
+      const text = input ? input.value.trim() : '';
+      if (!text) return;
+      input.value = '';
+      try {
+        await api(`/api/groups/${form.dataset.groupId}/feed`, {
+          method: 'POST',
+          body: JSON.stringify({ userId: state.userId, text })
+        });
+        await loadBootstrap(true);
+        showHud('动态已发布到小组');
+      } catch (err) { showHud(err.message, 'var(--red)'); }
+    });
+  }
+
   function buildExamsView() {
     const { exams } = state.data;
     return `
@@ -1796,7 +2041,7 @@ Script.complete();`;
 
       <section>
         ${exams.length ? exams.map((e) => `
-          <article class="card exam-card">
+          <article class="card exam-card" data-action="edit-exam" data-id="${e.id}" style="cursor:pointer;">
             <div class="exam-left">
               <div class="exam-tag-row">
                 <span class="exam-dot" style="background:${e.color || 'var(--accent)'}"></span>
@@ -1804,7 +2049,7 @@ Script.complete();`;
                 ${e.pinned ? '<span class="exam-pin-label">· 首页与锁屏置顶</span>' : ''}
               </div>
               <div class="exam-name">${esc(e.name)}</div>
-              <div class="exam-date-sub tabular">目标日 ${esc(e.targetDate)} · 进度 ${e.progress}%</div>
+              <div class="exam-date-sub tabular">目标日 ${esc(e.targetDate)} · 约 ${Math.max(1, Math.ceil(e.daysLeft / 7))} 周 · 进度 ${e.progress}%</div>
               <div class="progress-track" style="margin-top:10px;height:5px;">
                 <div class="progress-bar-fill" style="width:${e.progress}%;background:${e.color || 'var(--accent)'}"></div>
               </div>
@@ -1833,9 +2078,7 @@ Script.complete();`;
       <section class="card card-padded">
         <div class="chip-row">
           ${EXAM_PRESETS.map((p, idx) => `
-            <button class="choice-chip" data-action="quick-preset-exam" data-idx="${idx}">
-              + ${esc(p.name)}
-            </button>
+            <button class="choice-chip" data-action="quick-preset-exam" data-idx="${idx}">+ ${esc(p.name)}</button>
           `).join('')}
         </div>
       </section>
@@ -1920,8 +2163,97 @@ Script.complete();`;
   }
 
   // =========================================================================
-  // Modals / Bottom Sheets (Account Memory, Categories, Tasks, Exams, Groups)
+  // Modals / Bottom Sheets (Analytics, Account, Categories, Add/Edit Task, Add/Edit Exam, Groups, Focus)
   // =========================================================================
+
+  function openAnalyticsSheet() {
+    if (!state.data || !state.data.user) return;
+    const { user, tasks, categories } = state.data;
+    const today = todayKey();
+    const last7 = [];
+    let weekCompleted = 0;
+    let weekTotal = 0;
+    for (let i = -6; i <= 0; i++) {
+      const ds = shiftDateISO(today, i);
+      const st = getDayStats(tasks, ds);
+      weekCompleted += st.done;
+      weekTotal += st.total;
+      const d = parseDateISO(ds);
+      last7.push({ ds, wk: WEEKDAYS_SHORT[d.getDay()], isToday: ds === today, ...st });
+    }
+    const weekRate = weekTotal ? Math.round((weekCompleted / weekTotal) * 100) : 0;
+
+    // Category distribution across all tasks
+    const catTotals = new Map();
+    for (const t of tasks) {
+      const key = t.category || '未分组';
+      const cur = catTotals.get(key) || { name: key, done: 0, total: 0 };
+      cur.total++;
+      cur.done += (t.completedDates || []).length;
+      catTotals.set(key, cur);
+    }
+    const colorMap = new Map(categories.map((c) => [c.name, c.color]));
+    const catList = Array.from(catTotals.values()).sort((a, b) => b.done - a.done || b.total - a.total);
+    const maxDone = Math.max(1, ...catList.map((c) => c.done));
+
+    openSheet(`
+      <div class="sheet-header">
+        <h2 class="sheet-title">学习复盘与趋势</h2>
+        <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
+      </div>
+
+      <div class="month-kpi-strip" style="margin-bottom:14px;">
+        <div class="month-kpi">
+          <div class="month-kpi-val">${user.streak} 天</div>
+          <div class="month-kpi-lbl">连续打卡</div>
+        </div>
+        <div class="month-kpi">
+          <div class="month-kpi-val" style="color:var(--accent);">${weekCompleted}</div>
+          <div class="month-kpi-lbl">近 7 日完成</div>
+        </div>
+        <div class="month-kpi">
+          <div class="month-kpi-val" style="color:var(--green);">${weekRate}%</div>
+          <div class="month-kpi-lbl">周平均达成</div>
+        </div>
+      </div>
+
+      <div class="card card-padded" style="margin-bottom:14px;background:var(--bg-surface);">
+        <div style="font-size:13px;font-weight:700;margin-bottom:6px;">近 7 日任务达成趋势</div>
+        <div class="health-bars">
+          ${last7.map((d) => `
+            <div class="health-bar-col ${d.isToday ? 'is-today' : ''}">
+              <div class="health-bar-track" title="${d.ds}: ${d.done}/${d.total}">
+                <div class="health-bar-fill ${d.total > 0 && d.done === d.total ? 'is-perfect' : ''}" style="height:${d.total > 0 ? Math.max(12, d.pct) : 0}%"></div>
+              </div>
+              <span class="health-bar-day">${d.isToday ? '今' : d.wk}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <div class="card card-padded" style="margin-bottom:16px;background:var(--bg-surface);">
+        <div style="font-size:13px;font-weight:700;margin-bottom:10px;">各自定义大标题累计打卡分布</div>
+        ${catList.length ? catList.map((c) => `
+          <div class="cat-stat-row">
+            <div class="cat-stat-head">
+              <span style="display:inline-flex;align-items:center;gap:6px;font-weight:600;">
+                <span class="category-color-dot" style="background:${colorMap.get(c.name) || 'var(--accent)'}"></span>
+                ${esc(c.name)}
+              </span>
+              <span class="tabular" style="color:var(--text-secondary);">累计完成 ${c.done} 次</span>
+            </div>
+            <div class="progress-track" style="height:6px;">
+              <div class="progress-bar-fill" style="width:${Math.round((c.done / maxDone) * 100)}%;background:${colorMap.get(c.name) || 'var(--accent)'}"></div>
+            </div>
+          </div>
+        `).join('') : `
+          <div style="font-size:12px;color:var(--text-secondary);text-align:center;padding:8px 0;">完成任务后将自动统计各大标题投入分布</div>
+        `}
+      </div>
+
+      <button type="button" class="btn-primary btn-block" data-action="download-wallpaper-png">生成并保存今日打卡海报 PNG</button>
+    `);
+  }
 
   function openAccountSheet() {
     if (!state.data || !state.data.user) return;
@@ -1937,7 +2269,6 @@ Script.complete();`;
         <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
       </div>
 
-      <!-- Current Account Status Card -->
       <div class="card card-padded" style="margin-bottom:14px;background:var(--bg-surface);">
         <div style="display:flex;align-items:center;gap:12px;">
           <span class="avatar-dot" style="width:44px;height:44px;font-size:17px;background:${user.color}">${esc(user.avatar)}</span>
@@ -1956,13 +2287,12 @@ Script.complete();`;
         </div>
       </div>
 
-      <!-- Cross-Device Sync & Backup Section -->
       <div class="field-label" style="margin-bottom:8px;">跨设备无缝同步 / 换机数据迁移</div>
       <div class="card card-padded" style="margin-bottom:14px;background:var(--bg-surface);">
         <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;line-height:1.55;">
           ${cloudReady
             ? '您的统一账户已连接云端数据库，在新手机直接登录账号 @' + esc(user.account) + ' 即可自动恢复全部数据；下方也可随时导出本地加密备份。'
-            : '换新手机或换浏览器时，点击下方生成「加密换机迁移链接」发给自己，在新设备点开并验证原密码即可 100% 恢复全部大标题、时间轴与倒计时。'}
+            : '换新手机或换浏览器时，点击下方生成「加密换机迁移链接」发给自己，在新设备点开并验证原密码即可完整恢复全部数据。'}
         </p>
         <button type="button" class="btn-primary btn-block" id="btn-copy-restore-link">复制加密换机迁移链接</button>
         <div class="btn-row" style="margin-top:10px;">
@@ -1971,7 +2301,6 @@ Script.complete();`;
         </div>
       </div>
 
-      <!-- Switch Other Local Accounts -->
       ${users.length > 1 ? `
         <div class="field-label" style="margin-bottom:8px;">快速切换本机已记忆账户</div>
         <div style="margin-bottom:14px;">
@@ -2015,9 +2344,13 @@ Script.complete();`;
       const snap = buildAccountSnapshot(state.userId);
       if (!snap) return;
       const encoded = encodeB64Json(snap);
+      if (encoded.length > 3600) {
+        showHud('数据量较大，已自动为您导出备份文件更安全', 'var(--accent)');
+        document.getElementById('btn-export-backup').click();
+        return;
+      }
       const base = window.location.origin + window.location.pathname;
-      const url = `${base}?restore=${encodeURIComponent(encoded)}`;
-      await copyText(url, '已复制换机迁移链接，在新设备打开输入密码即可恢复');
+      await copyText(`${base}?restore=${encodeURIComponent(encoded)}`, '已复制换机迁移链接，在新设备打开输密码即可恢复');
     });
 
     document.getElementById('btn-export-backup').addEventListener('click', () => {
@@ -2105,9 +2438,7 @@ Script.complete();`;
           `).join('')}
         </div>
       ` : `
-        <div class="empty-box" style="padding:16px 8px;font-size:12px;">
-          还没有自定义大标题，在上方输入名称即可创建。
-        </div>
+        <div class="empty-box" style="padding:16px 8px;font-size:12px;">还没有自定义大标题，在上方输入名称即可创建。</div>
       `}
     `);
 
@@ -2157,16 +2488,21 @@ Script.complete();`;
     });
   }
 
-  function openAddTaskSheet(prefillCategory = '') {
+  function openTaskEditorSheet(existingTask = null, prefillCategory = '') {
+    const isEdit = Boolean(existingTask);
     const cats = (state.data && state.data.categories) || [];
-    const initialCat = prefillCategory || (cats[0] ? cats[0].name : '');
+    const initialCat = isEdit ? (existingTask.category || '') : (prefillCategory || (cats[0] ? cats[0].name : ''));
+    const initialTitle = isEdit ? existingTask.title : '';
+    const initialDate = isEdit ? existingTask.date : state.selectedDate;
+    const initialDur = isEdit ? (existingTask.durationMin || 45) : 45;
+    let repeatDaily = isEdit ? Boolean(existingTask.repeatDaily) : false;
 
     openSheet(`
       <div class="sheet-header">
-        <h2 class="sheet-title">新建学习任务</h2>
+        <h2 class="sheet-title">${isEdit ? '编辑学习任务' : '新建学习任务'}</h2>
         <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
       </div>
-      <form id="form-add-task">
+      <form id="form-task-editor">
         <div class="field">
           <label class="field-label" for="input-task-category">任务大标题（可自由命名或点选已有）</label>
           <input id="input-task-category" class="input" type="text" required maxlength="18" placeholder="例如：专业课、高数、英语精读" value="${esc(initialCat)}" />
@@ -2181,17 +2517,17 @@ Script.complete();`;
 
         <div class="field">
           <label class="field-label" for="input-task-title">具体任务内容</label>
-          <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="例如：刷完第三章真题并整理错题" autofocus />
+          <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="例如：刷完第三章真题并整理错题" value="${esc(initialTitle)}" autofocus />
         </div>
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
           <div class="field">
             <label class="field-label" for="input-task-date">安排日期</label>
-            <input id="input-task-date" class="input tabular" type="date" required value="${state.selectedDate}" />
+            <input id="input-task-date" class="input tabular" type="date" required value="${esc(initialDate)}" />
           </div>
           <div class="field">
             <label class="field-label" for="input-task-duration">预计时长（分）</label>
-            <input id="input-task-duration" class="input tabular" type="number" min="5" max="360" value="45" />
+            <input id="input-task-duration" class="input tabular" type="number" min="5" max="360" value="${initialDur}" />
           </div>
         </div>
 
@@ -2201,16 +2537,21 @@ Script.complete();`;
               <div style="font-size:14px;font-weight:600;">每日自动重复</div>
               <div style="font-size:12px;color:var(--text-secondary);">从该日期起每天自动出现在时间轴中</div>
             </div>
-            <button type="button" id="switch-repeat" class="ios-switch" role="switch" aria-checked="false"></button>
+            <button type="button" id="switch-repeat" class="ios-switch ${repeatDaily ? 'is-on' : ''}" role="switch" aria-checked="${repeatDaily}"></button>
           </div>
         </div>
-        <button type="submit" class="btn-primary btn-block" style="margin-top:8px;">添加到任务序列</button>
+
+        <button type="submit" class="btn-primary btn-block" style="margin-top:8px;">${isEdit ? '保存修改' : '添加到任务序列'}</button>
+        ${isEdit ? `
+          <div class="btn-row" style="margin-top:10px;">
+            <button type="button" id="btn-move-tomorrow" class="btn-secondary">移至明日</button>
+            <button type="button" id="btn-focus-this-task" class="btn-secondary" style="color:var(--accent);">专注此任务</button>
+          </div>
+        ` : ''}
       </form>
     `);
 
-    let repeatDaily = false;
     const catInput = document.getElementById('input-task-category');
-
     sheetContent.querySelectorAll('[data-pick-cat]').forEach((btn) => {
       btn.addEventListener('click', () => {
         catInput.value = btn.dataset.pickCat;
@@ -2230,7 +2571,31 @@ Script.complete();`;
       sw.setAttribute('aria-checked', String(repeatDaily));
     });
 
-    document.getElementById('form-add-task').addEventListener('submit', async (e) => {
+    if (isEdit) {
+      document.getElementById('btn-move-tomorrow').addEventListener('click', async () => {
+        const tom = shiftDateISO(todayKey(), 1);
+        closeSheet();
+        try {
+          await api(`/api/tasks/${existingTask.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ scheduledDate: tom, repeatDaily: false })
+          });
+          await loadBootstrap(true);
+          showHud('已移至明日计划');
+        } catch (err) { showHud(err.message, 'var(--red)'); }
+      });
+
+      document.getElementById('btn-focus-this-task').addEventListener('click', () => {
+        state.focus.label = `${existingTask.category} · ${existingTask.title}`;
+        if (!state.focus.running) {
+          state.focus.presetMin = Math.min(60, Math.max(15, existingTask.durationMin || 25));
+          state.focus.remainingSec = state.focus.presetMin * 60;
+        }
+        openFocusSheet();
+      });
+    }
+
+    document.getElementById('form-task-editor').addEventListener('submit', async (e) => {
       e.preventDefault();
       const category = catInput.value.trim() || '未分组';
       const title = document.getElementById('input-task-title').value.trim();
@@ -2239,42 +2604,68 @@ Script.complete();`;
       if (!title) return;
       closeSheet();
       try {
-        await api('/api/tasks', {
-          method: 'POST',
-          body: JSON.stringify({ userId: state.userId, category, title, date, durationMin, repeatDaily })
-        });
-        state.selectedDate = date;
-        state.viewMonth = currentMonthKey(date);
-        await loadBootstrap(true);
-        showHud(`已添加到「${category}」`);
+        if (isEdit) {
+          await api(`/api/tasks/${existingTask.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ category, title, scheduledDate: date, durationMin, repeatDaily })
+          });
+          await loadBootstrap(true);
+          showHud('任务已更新');
+        } else {
+          await api('/api/tasks', {
+            method: 'POST',
+            body: JSON.stringify({ userId: state.userId, category, title, date, durationMin, repeatDaily })
+          });
+          state.selectedDate = date;
+          state.viewMonth = currentMonthKey(date);
+          await loadBootstrap(true);
+          showHud(`已添加到「${category}」`);
+        }
       } catch (err) { showHud(err.message, 'var(--red)'); }
     });
   }
 
-  function openAddExamSheet() {
+  function openExamEditorSheet(existingExam = null) {
+    const isEdit = Boolean(existingExam);
+    let pickedColor = isEdit ? (existingExam.color || '#0071E3') : '#0071E3';
     openSheet(`
       <div class="sheet-header">
-        <h2 class="sheet-title">设定考试 / 目标倒计时</h2>
+        <h2 class="sheet-title">${isEdit ? '编辑目标倒计时' : '设定考试 / 目标倒计时'}</h2>
         <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
       </div>
-      <form id="form-add-exam">
+      <form id="form-exam-editor">
         <div class="field">
           <label class="field-label" for="input-exam-name">考试或目标名称</label>
-          <input id="input-exam-name" class="input" type="text" required maxlength="30" placeholder="例如：2027 全国考研初试" autofocus />
+          <input id="input-exam-name" class="input" type="text" required maxlength="30" placeholder="例如：2027 全国考研初试" value="${esc(isEdit ? existingExam.name : '')}" autofocus />
         </div>
         <div class="field">
           <label class="field-label" for="input-exam-date">目标日期</label>
-          <input id="input-exam-date" class="input tabular" type="date" required value="${addDaysStr(60)}" />
+          <input id="input-exam-date" class="input tabular" type="date" required value="${esc(isEdit ? existingExam.targetDate : addDaysStr(60))}" />
         </div>
         <div class="field">
           <label class="field-label" for="input-exam-tag">阶段标签</label>
-          <input id="input-exam-tag" class="input" type="text" maxlength="12" value="核心目标" />
+          <input id="input-exam-tag" class="input" type="text" maxlength="12" value="${esc(isEdit ? existingExam.tag : '核心目标')}" />
         </div>
-        <button type="submit" class="btn-primary btn-block">保存并置顶显示</button>
+        <div class="field">
+          <label class="field-label">主题标识色</label>
+          <div class="color-swatch-row">
+            ${SYSTEM_COLORS.map((c) => `
+              <button type="button" class="color-swatch ${c === pickedColor ? 'is-selected' : ''}" data-exam-swatch="${c}" style="background:${c}" aria-label="选择颜色"></button>
+            `).join('')}
+          </div>
+        </div>
+        <button type="submit" class="btn-primary btn-block">${isEdit ? '保存更改' : '保存并置顶显示'}</button>
       </form>
     `);
 
-    document.getElementById('form-add-exam').addEventListener('submit', async (e) => {
+    sheetContent.querySelectorAll('[data-exam-swatch]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        pickedColor = btn.dataset.examSwatch;
+        sheetContent.querySelectorAll('[data-exam-swatch]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+      });
+    });
+
+    document.getElementById('form-exam-editor').addEventListener('submit', async (e) => {
       e.preventDefault();
       const name = document.getElementById('input-exam-name').value.trim();
       const targetDate = document.getElementById('input-exam-date').value;
@@ -2282,9 +2673,21 @@ Script.complete();`;
       if (!name || !targetDate) return;
       closeSheet();
       try {
-        await api('/api/exams', { method: 'POST', body: JSON.stringify({ userId: state.userId, name, targetDate, tag, pinned: true }) });
-        await loadBootstrap(true);
-        showHud('目标倒计时已置顶');
+        if (isEdit) {
+          await api(`/api/exams/${existingExam.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ name, targetDate, tag, color: pickedColor })
+          });
+          await loadBootstrap(true);
+          showHud('目标倒计时已更新');
+        } else {
+          await api('/api/exams', {
+            method: 'POST',
+            body: JSON.stringify({ userId: state.userId, name, targetDate, tag, color: pickedColor, pinned: true })
+          });
+          await loadBootstrap(true);
+          showHud('目标倒计时已置顶');
+        }
       } catch (err) { showHud(err.message, 'var(--red)'); }
     });
   }
@@ -2371,11 +2774,42 @@ Script.complete();`;
     });
   }
 
+  // =========================================================================
+  // Wall-Clock Accurate Focus Timer (Survives iOS Safari Background Sleep!)
+  // =========================================================================
+
+  function getFocusRemainingSec() {
+    const f = state.focus;
+    if (!f.running || !f.endAt) return f.remainingSec;
+    return Math.max(0, Math.ceil((f.endAt - Date.now()) / 1000));
+  }
+
+  function updateFocusDomInPlace() {
+    const f = state.focus;
+    const rem = getFocusRemainingSec();
+    const totalSec = Math.max(1, f.presetMin * 60);
+    const pct = Math.min(100, Math.max(0, ((totalSec - rem) / totalSec) * 100));
+
+    const clock = document.getElementById('focus-sheet-clock');
+    if (clock) clock.textContent = formatTimer(rem);
+    const liveBar = document.getElementById('live-focus-bar-clock');
+    if (liveBar) liveBar.textContent = formatTimer(rem);
+    const ringEl = document.getElementById('focus-ring-fill');
+    if (ringEl) {
+      const c = Number(ringEl.dataset.circumference || 0);
+      if (c > 0) ringEl.setAttribute('stroke-dashoffset', (c * (1 - pct / 100)).toFixed(2));
+    }
+    const toggleBtn = document.getElementById('focus-toggle-btn');
+    if (toggleBtn) toggleBtn.textContent = f.running ? '暂停专注' : '开始专注';
+  }
+
   function openFocusSheet() {
     if (!state.data || !state.data.user) return;
     const f = state.focus;
-    const totalSec = f.presetMin * 60;
-    const pct = Math.round(((totalSec - f.remainingSec) / totalSec) * 100);
+    const rem = getFocusRemainingSec();
+    const totalSec = Math.max(1, f.presetMin * 60);
+    const pct = Math.round(((totalSec - rem) / totalSec) * 100);
+    const todayTodos = getDayStats(state.data.tasks, todayKey()).list.filter((t) => !isTaskDoneOnDate(t, todayKey()));
 
     openSheet(`
       <div class="sheet-header">
@@ -2384,17 +2818,28 @@ Script.complete();`;
       </div>
       <div class="focus-dial-wrap">
         <div class="ring-box" style="margin:6px 0 14px;">
-          ${ringSVG(pct, 196, 9, 'var(--accent)')}
-          <div class="ring-center" style="flex-direction:column;gap:4px;">
-            <span id="focus-sheet-clock" class="focus-time-big">${formatTimer(f.remainingSec)}</span>
-            <span style="font-size:12px;color:var(--text-secondary);font-weight:500;">${esc(f.label)}</span>
+          ${ringSVG(pct, 196, 9, 'var(--accent)', 'focus-ring-fill')}
+          <div class="ring-center" style="flex-direction:column;gap:4px;padding:0 18px;text-align:center;">
+            <span id="focus-sheet-clock" class="focus-time-big">${formatTimer(rem)}</span>
+            <span id="focus-sheet-label" style="font-size:12px;color:var(--text-secondary);font-weight:500;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(f.label)}</span>
           </div>
         </div>
-        <div class="chip-row" style="justify-content:center;margin-bottom:18px;">
+        <div class="chip-row" style="justify-content:center;margin-bottom:14px;">
           ${[25, 45, 60].map((m) => `
             <button type="button" class="choice-chip ${f.presetMin === m ? 'is-selected' : ''}" data-focus-preset="${m}">${m} 分钟</button>
           `).join('')}
         </div>
+        ${todayTodos.length ? `
+          <div style="width:100%;margin-bottom:14px;">
+            <div class="field-label" style="text-align:center;">关联今日待办任务（可选）</div>
+            <div class="chip-row" style="justify-content:center;">
+              ${todayTodos.slice(0, 3).map((t) => {
+                const lbl = `${t.category} · ${t.title}`;
+                return `<button type="button" class="choice-chip ${f.label === lbl ? 'is-selected' : ''}" data-focus-task="${esc(lbl)}" style="max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.title)}</button>`;
+              }).join('')}
+            </div>
+          </div>
+        ` : ''}
         <div class="btn-row" style="width:100%;">
           <button id="focus-toggle-btn" class="btn-primary">${f.running ? '暂停专注' : '开始专注'}</button>
           <button id="focus-finish-btn" class="btn-secondary">结算记录时长</button>
@@ -2408,18 +2853,30 @@ Script.complete();`;
         stopFocusInterval();
         f.presetMin = min;
         f.remainingSec = min * 60;
-        openFocusSheet();
+        sheetContent.querySelectorAll('[data-focus-preset]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+        updateFocusDomInPlace();
+      });
+    });
+
+    sheetContent.querySelectorAll('[data-focus-task]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        f.label = btn.dataset.focusTask;
+        const lblEl = document.getElementById('focus-sheet-label');
+        if (lblEl) lblEl.textContent = f.label;
+        sheetContent.querySelectorAll('[data-focus-task]').forEach((b) => b.classList.toggle('is-selected', b === btn));
       });
     });
 
     document.getElementById('focus-toggle-btn').addEventListener('click', () => {
       if (f.running) stopFocusInterval();
       else startFocusInterval();
-      openFocusSheet();
+      updateFocusDomInPlace();
+      renderView(false);
     });
 
     document.getElementById('focus-finish-btn').addEventListener('click', async () => {
-      const elapsedMin = Math.max(1, Math.round((f.presetMin * 60 - f.remainingSec) / 60) || f.presetMin);
+      const remNow = getFocusRemainingSec();
+      const elapsedMin = Math.max(1, Math.round((f.presetMin * 60 - remNow) / 60) || f.presetMin);
       stopFocusInterval();
       f.remainingSec = f.presetMin * 60;
       closeSheet();
@@ -2432,39 +2889,54 @@ Script.complete();`;
   }
 
   function startFocusInterval() {
-    if (state.focus.running) return;
-    state.focus.running = true;
-    state.focus.timerId = setInterval(async () => {
-      if (state.focus.remainingSec > 0) {
-        state.focus.remainingSec--;
-        const clock = document.getElementById('focus-sheet-clock');
-        if (clock) clock.textContent = formatTimer(state.focus.remainingSec);
-      } else {
+    const f = state.focus;
+    if (f.running) return;
+    f.running = true;
+    f.endAt = Date.now() + f.remainingSec * 1000;
+    f.timerId = setInterval(async () => {
+      const rem = getFocusRemainingSec();
+      f.remainingSec = rem;
+      updateFocusDomInPlace();
+      if (rem <= 0) {
         stopFocusInterval();
-        const mins = state.focus.presetMin;
-        state.focus.remainingSec = mins * 60;
-        await api('/api/focus/complete', { method: 'POST', body: JSON.stringify({ userId: state.userId, minutes: mins, label: state.focus.label }) }).catch(() => {});
+        const mins = f.presetMin;
+        f.remainingSec = mins * 60;
+        await api('/api/focus/complete', { method: 'POST', body: JSON.stringify({ userId: state.userId, minutes: mins, label: f.label }) }).catch(() => {});
         await loadBootstrap(true);
-        showHud(`专注 ${mins} 分钟完成`);
+        showHud(`专注 ${mins} 分钟完成，状态极佳`);
       }
-    }, 1000);
+    }, 500);
   }
 
   function stopFocusInterval() {
-    state.focus.running = false;
-    if (state.focus.timerId) { clearInterval(state.focus.timerId); state.focus.timerId = null; }
+    const f = state.focus;
+    if (f.running) f.remainingSec = getFocusRemainingSec();
+    f.running = false;
+    f.endAt = null;
+    if (f.timerId) { clearInterval(f.timerId); f.timerId = null; }
   }
 
+  // Re-sync focus timer immediately when returning from iOS background
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && state.focus.running) updateFocusDomInPlace();
+  });
+
   // =========================================================================
-  // 1170x2532 iPhone Lock Screen PNG Generator
+  // Fast Preview + Crisp 1170x2532 HD PNG Lock Screen Wallpaper Generator
   // =========================================================================
 
-  function renderLockscreenCanvasDataUrl() {
+  function renderLockscreenCanvasDataUrl(previewMode = false) {
     if (!state.data || !state.data.user) return '';
     const canvas = document.getElementById('wallpaper-canvas');
+    const scale = previewMode ? 0.5 : 1;
+    const W = Math.round(1170 * scale);
+    const H = Math.round(2532 * scale);
+    canvas.width = W;
+    canvas.height = H;
     const ctx = canvas.getContext('2d');
-    const W = 1170;
-    const H = 2532;
+    ctx.save();
+    ctx.scale(scale, scale);
+
     const isDark = state.theme === 'dark';
     const today = todayKey();
     const pinned = state.data.exams[0] || { name: '尚未设定目标倒计时', tag: '时序', daysLeft: 0, progress: 0, targetDate: today };
@@ -2472,18 +2944,18 @@ Script.complete();`;
     const tasks = todayStats.list.slice(0, 3);
     const grp = state.data.groups[0];
 
-    const bgGrad = ctx.createLinearGradient(0, 0, W, H);
+    const bgGrad = ctx.createLinearGradient(0, 0, 1170, 2532);
     if (isDark) { bgGrad.addColorStop(0, '#070C18'); bgGrad.addColorStop(1, '#000000'); }
     else { bgGrad.addColorStop(0, '#E8F0FC'); bgGrad.addColorStop(1, '#F5F5F7'); }
     ctx.fillStyle = bgGrad;
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, 0, 1170, 2532);
 
     const accent = isDark ? '#0A84FF' : '#0071E3';
     const rad = ctx.createRadialGradient(320, 960, 40, 320, 960, 680);
     rad.addColorStop(0, isDark ? 'rgba(10,132,255,0.22)' : 'rgba(0,113,227,0.14)');
     rad.addColorStop(1, 'rgba(0,113,227,0)');
     ctx.fillStyle = rad;
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, 0, 1170, 2532);
 
     function roundRect(x, y, w, h, r) {
       ctx.beginPath();
@@ -2556,29 +3028,29 @@ Script.complete();`;
 
     ctx.fillStyle = muted;
     ctx.font = `500 31px ${fontFamily}`;
-    ctx.fillText(grp ? `${grp.name} · 今日 ${grp.teamPct}%` : `${state.data.user.name} · 时序`, 156, 1878);
+    ctx.fillText(grp ? `${grp.name} · 今日 ${grp.teamPct}%` : `${state.data.user.name} · 连续 ${state.data.user.streak} 天`, 156, 1878);
 
     ctx.fillStyle = accent;
     ctx.font = `600 31px ${fontFamily}`;
     ctx.textAlign = 'right';
     ctx.fillText(`今日 ${todayStats.done}/${todayStats.total}`, 1014, 1878);
     ctx.textAlign = 'left';
+    ctx.restore();
 
     return canvas.toDataURL('image/png');
   }
 
   function downloadLockscreenPNG() {
     const pinned = (state.data && state.data.exams[0]) || { daysLeft: 0 };
-    const url = renderLockscreenCanvasDataUrl();
+    const url = renderLockscreenCanvasDataUrl(false);
     if (!url) return;
     const link = document.createElement('a');
     link.download = `时序倒计时壁纸-${pinned.daysLeft}天.png`;
     link.href = url;
     link.click();
-    showHud('高清锁屏倒计时壁纸已保存');
+    showHud('1170×2532 高清壁纸已保存');
   }
 
-  // Backup file import handler
   importBackupInput.addEventListener('change', async () => {
     const file = importBackupInput.files && importBackupInput.files[0];
     importBackupInput.value = '';
@@ -2609,10 +3081,7 @@ Script.complete();`;
 
   document.querySelectorAll('.tab-item').forEach((btn) => {
     btn.addEventListener('click', () => {
-      if (!state.data || !state.data.user) {
-        showHud('请先登录或注册统一账户', 'var(--accent)');
-        return;
-      }
+      if (!state.data || !state.data.user) { showHud('请先登录或注册统一账户', 'var(--accent)'); return; }
       const next = btn.dataset.tab;
       if (next === state.activeTab) { mainScroll.scrollTo({ top: 0, behavior: 'smooth' }); return; }
       state.activeTab = next;
@@ -2636,9 +3105,15 @@ Script.complete();`;
 
   fabAdd.addEventListener('click', () => {
     if (!state.data || !state.data.user) return;
-    if (state.activeTab === 'exams') openAddExamSheet();
-    else openAddTaskSheet();
+    if (state.activeTab === 'exams') openExamEditorSheet(null);
+    else openTaskEditorSheet(null);
   });
+
+  let syncDebounceTimer = null;
+  function scheduleQuietSync(delayMs = 260) {
+    clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = setTimeout(() => loadBootstrap(true), delayMs);
+  }
 
   document.addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-action]');
@@ -2646,14 +3121,29 @@ Script.complete();`;
     const action = btn.dataset.action;
 
     if (action === 'close-sheet') return closeSheet();
-    if (action === 'open-add-task') return openAddTaskSheet();
-    if (action === 'open-add-task-in-cat') return openAddTaskSheet(btn.dataset.category || '');
+    if (action === 'open-add-task') return openTaskEditorSheet(null);
+    if (action === 'open-add-task-in-cat') return openTaskEditorSheet(null, btn.dataset.category || '');
     if (action === 'open-manage-categories') return openManageCategoriesSheet();
-    if (action === 'open-add-exam') return openAddExamSheet();
+    if (action === 'open-add-exam') return openExamEditorSheet(null);
     if (action === 'open-create-group') return openCreateGroupSheet();
     if (action === 'open-join-group') return openJoinGroupSheet();
     if (action === 'open-focus') return openFocusSheet();
+    if (action === 'open-analytics') return openAnalyticsSheet();
     if (action === 'trigger-import-backup') { importBackupInput.click(); return; }
+
+    if (action === 'edit-task') {
+      const t = state.data.tasks.find((x) => x.id === btn.dataset.id);
+      if (t) openTaskEditorSheet(t);
+      return;
+    }
+
+    if (action === 'edit-exam') {
+      // Ignore clicks on inner inline action buttons (pin/delete)
+      if (e.target.closest('[data-action="pin-exam"], [data-action="delete-exam"]')) return;
+      const ex = state.data.exams.find((x) => x.id === btn.dataset.id);
+      if (ex) openExamEditorSheet(ex);
+      return;
+    }
 
     if (action === 'pick-date') {
       const ds = btn.dataset.date;
@@ -2692,14 +3182,24 @@ Script.complete();`;
       if (!task) return;
       const dateStr = state.selectedDate;
       const nextDone = !isTaskDoneOnDate(task, dateStr);
+
+      // Optimistically animate the exact row without tearing down DOM mid-spring!
+      const rowEl = document.querySelector(`[data-task-row="${id}"]`);
+      if (rowEl) rowEl.classList.toggle('is-done', nextDone);
+
       if (!Array.isArray(task.completedDates)) task.completedDates = [];
-      if (nextDone) task.completedDates.push(dateStr);
-      else task.completedDates = task.completedDates.filter((d) => d !== dateStr);
-      renderView(false);
+      if (nextDone && !task.completedDates.includes(dateStr)) task.completedDates.push(dateStr);
+      if (!nextDone) task.completedDates = task.completedDates.filter((d) => d !== dateStr);
+
+      const st = getDayStats(state.data.tasks, dateStr);
+      if (nextDone) {
+        if (st.total > 0 && st.done === st.total) showHud(`${getRelativeDayTitle(dateStr)}全部任务达成`, 'var(--green)');
+        else showHud(dateStr === todayKey() ? '今日打卡完成' : `已标记 ${formatDateCN(dateStr)} 完成`);
+      }
+
       try {
         await api(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify({ done: nextDone, date: dateStr }) });
-        await loadBootstrap(true);
-        if (nextDone) showHud(dateStr === todayKey() ? '今日打卡完成' : `已标记 ${formatDateCN(dateStr)} 完成`);
+        scheduleQuietSync(280);
       } catch (err) {
         showHud(err.message, 'var(--red)');
         await loadBootstrap(true);
@@ -2708,15 +3208,27 @@ Script.complete();`;
     }
 
     if (action === 'delete-task') {
+      const targetTask = state.data.tasks.find((t) => t.id === btn.dataset.id);
+      const snapshotCopy = targetTask ? JSON.parse(JSON.stringify(targetTask)) : null;
       try {
         await api(`/api/tasks/${btn.dataset.id}`, { method: 'DELETE' });
         await loadBootstrap(true);
-        showHud('已删除任务', 'var(--text-tertiary)');
+        if (snapshotCopy) {
+          showHud('已删除任务', 'var(--text-tertiary)', {
+            label: '撤销',
+            onClick: async () => {
+              await api('/api/tasks/restore', { method: 'POST', body: JSON.stringify({ task: snapshotCopy }) });
+              await loadBootstrap(true);
+              showHud('已撤销删除');
+            }
+          });
+        }
       } catch (err) { showHud(err.message, 'var(--red)'); }
       return;
     }
 
     if (action === 'pin-exam') {
+      e.stopPropagation();
       try {
         await api(`/api/exams/${btn.dataset.id}`, { method: 'PATCH', body: JSON.stringify({ pinned: true }) });
         await loadBootstrap(true);
@@ -2726,6 +3238,7 @@ Script.complete();`;
     }
 
     if (action === 'delete-exam') {
+      e.stopPropagation();
       try {
         await api(`/api/exams/${btn.dataset.id}`, { method: 'DELETE' });
         await loadBootstrap(true);
@@ -2755,6 +3268,16 @@ Script.complete();`;
       const encoded = encodeB64Json({ name: grp.name, inviteCode: grp.inviteCode, examName: grp.examName, targetDate: grp.targetDate, notice: grp.notice });
       const inviteUrl = `${base}?join=${encodeURIComponent(grp.inviteCode)}${encoded ? `&g=${encodeURIComponent(encoded)}` : ''}`;
       await copyText(`我在「时序」创建了学习小组【${grp.name}】，点击链接一起倒计时打卡（邀请码 ${grp.inviteCode}）：${inviteUrl}`, '已复制微信邀请链接');
+      return;
+    }
+
+    if (action === 'leave-group') {
+      try {
+        await api(`/api/groups/${btn.dataset.groupId}/leave`, { method: 'POST', body: JSON.stringify({ userId: state.userId }) });
+        state.activeGroupId = null;
+        await loadBootstrap(true);
+        showHud('已退出该学习小组');
+      } catch (err) { showHud(err.message, 'var(--red)'); }
       return;
     }
 
@@ -2838,8 +3361,28 @@ Script.complete();`;
     }
   }
 
+  // Global stability guards (prevent silent freezes or unhandled rejections)
+  window.addEventListener('unhandledrejection', (ev) => {
+    console.warn('[Recovered Rejection]', ev.reason);
+  });
+
   if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').then((reg) => {
+        reg.addEventListener('updatefound', () => {
+          const nw = reg.installing;
+          if (!nw) return;
+          nw.addEventListener('statechange', () => {
+            if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+              showHud('新版本已就绪，数据安全保留', 'var(--accent)', {
+                label: '立即刷新',
+                onClick: () => window.location.reload()
+              });
+            }
+          });
+        });
+      }).catch(() => {});
+    });
   }
 
   applyTheme(state.theme);

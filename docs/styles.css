@@ -1993,3 +1993,226 @@ html[data-theme="dark"] .hero-countdown {
   outline: none;
   padding: 2px 4px;
 }
+
+/* ==========================================================================
+   Mature Apple Polish: Undo HUD Action, Live Focus Capsule, Health Analytics,
+   Touch-Drag Bottom Sheet & Reduced Motion Accessibility
+   ========================================================================== */
+
+.hud-pill.has-action {
+  pointer-events: auto;
+  padding-right: 10px;
+}
+
+.hud-action-btn {
+  margin-left: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.16);
+  color: #FFFFFF;
+  font-size: 12px;
+  font-weight: 600;
+  transition: background var(--dur-fast) ease, transform var(--dur-fast) ease;
+}
+
+.hud-action-btn:active {
+  background: rgba(255, 255, 255, 0.28);
+  transform: scale(0.94);
+}
+
+/* Floating Active Focus Capsule (Apple Dynamic Island Inspired) */
+.focus-live-bar {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-pill);
+  background: #1D1D1F;
+  color: #F5F5F7;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
+  cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease-apple);
+  animation: appleViewEnter 260ms var(--ease-apple) both;
+}
+
+html[data-theme="dark"] .focus-live-bar {
+  background: #2C2C2E;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.focus-live-bar:active {
+  transform: scale(0.98);
+}
+
+.focus-live-left {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.focus-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  flex-shrink: 0;
+  animation: subtleBreathe 2s ease-in-out infinite;
+}
+
+@keyframes subtleBreathe {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.85); }
+}
+
+.focus-live-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(245, 245, 247, 0.82);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-live-time {
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  color: #FFFFFF;
+}
+
+/* Apple Health 7-Day Trend Bar Chart & Category Distribution */
+.health-bars {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  align-items: end;
+  gap: 8px;
+  height: 106px;
+  padding: 10px 6px 4px;
+}
+
+.health-bar-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.health-bar-track {
+  width: 100%;
+  max-width: 24px;
+  flex: 1;
+  border-radius: 7px;
+  background: var(--bg-surface-secondary);
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+}
+
+.health-bar-fill {
+  width: 100%;
+  border-radius: 7px;
+  background: var(--accent);
+  transition: height 500ms var(--ease-apple);
+}
+
+.health-bar-fill.is-perfect {
+  background: var(--green);
+}
+
+.health-bar-day {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+
+.health-bar-col.is-today .health-bar-day {
+  color: var(--accent);
+}
+
+.cat-stat-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.cat-stat-row:last-child {
+  margin-bottom: 0;
+}
+
+.cat-stat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+/* Task Row Edit Cue & Subtle Hover */
+.task-row:hover {
+  background: var(--bg-surface-hover);
+}
+
+.task-row-edit-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  opacity: 0;
+  transition: opacity var(--dur-fast) ease;
+}
+
+.task-row:hover .task-row-edit-hint {
+  opacity: 1;
+}
+
+/* Group Quick Post Composer */
+.feed-composer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.feed-composer-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  outline: none;
+  padding: 4px 2px;
+}
+
+.feed-composer-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* Sheet Dragging State (Zero transition lag while finger drags) */
+.sheet-panel.is-dragging {
+  transition: none !important;
+}
+
+.sheet-grabber-wrap {
+  cursor: grab;
+  touch-action: none;
+}
+
+/* Subtle Focus Ring for Keyboard Accessibility */
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Respect iOS Reduce Motion Preference */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
