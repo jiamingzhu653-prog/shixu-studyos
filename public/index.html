@@ -141,7 +141,10 @@
     </nav>
   </div>
 
-  <!-- iOS Native Modal Sheet Backdrop + Sheet Container -->
+  <!-- Native Document-Flow iOS Full-Page Form Modal (Zero fixed-keyboard conflict on iOS Safari) -->
+  <div id="modal-page" class="modal-page hidden" role="dialog" aria-modal="true" aria-hidden="true"></div>
+
+  <!-- iOS Native Bottom Sheet (Non-input menus: Themes, Focus Timer, Analytics, Account, Notebook) -->
   <div id="sheet-backdrop" class="sheet-backdrop hidden" aria-hidden="true">
     <div id="sheet-panel" class="sheet-panel" role="dialog" aria-modal="true">
       <div class="sheet-grabber-wrap">

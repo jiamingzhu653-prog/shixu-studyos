@@ -411,6 +411,8 @@
   const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('shixu_permanent_sync') : null;
 
   // DOM refs
+  const appShell = document.getElementById('app-shell');
+  const modalPage = document.getElementById('modal-page');
   const topNav = document.getElementById('top-nav');
   const mainScroll = document.getElementById('main-scroll');
   const viewContainer = document.getElementById('view-container');
@@ -1577,69 +1579,16 @@
   }
 
   // =========================================================================
-  // iOS Safari Keyboard & Viewport Recovery Engine
-  // Guarantees 100% return to pre-keyboard state across ALL iOS models
-  // (iPhone SE, mini, 13-16 Pro/Pro Max, iPad) when hiding soft keyboard!
+  // Native iOS Safari Document-Flow Form Modal + Keyboard Stability
+  // Works WITH iOS Safari's native keyboard engine (never fights visualViewport!)
   // =========================================================================
 
-  let kbRestoreTimers = [];
+  let savedPageScrollY = 0;
   let sheetSettleTimer = null;
+  let kbBlurTimers = [];
 
   function isFormField(el) {
     return Boolean(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT'));
-  }
-
-  function clearKeyboardViewportState() {
-    document.documentElement.classList.remove('ios-kb-open');
-    document.documentElement.style.removeProperty('--kb-height');
-    document.documentElement.style.removeProperty('--kb-top');
-    document.documentElement.style.removeProperty('--kb-inset');
-  }
-
-  function restoreIOSViewport() {
-    if (document.documentElement.scrollTop !== 0) document.documentElement.scrollTop = 0;
-    if (document.body.scrollTop !== 0) document.body.scrollTop = 0;
-    if (window.scrollY !== 0 || window.scrollX !== 0) window.scrollTo(0, 0);
-  }
-
-  function scrollFocusedInputIntoVisibleBand(el) {
-    if (!isFormField(el)) return;
-    const vv = window.visualViewport;
-    const bandTop = vv ? Math.max(0, vv.offsetTop) : 0;
-    const bandHeight = vv ? vv.height : window.innerHeight;
-    const bandBottom = bandTop + bandHeight;
-
-    const inSheet = sheetContent && sheetContent.contains(el);
-    const scroller = inSheet ? sheetContent : mainScroll;
-    if (!scroller) return;
-
-    const headerEl = inSheet ? sheetContent.querySelector('.sheet-header') : topNav;
-    const headerH = headerEl ? headerEl.getBoundingClientRect().height : 0;
-    const scrollerRect = scroller.getBoundingClientRect();
-    const safeTop = Math.max(bandTop, scrollerRect.top) + (inSheet ? headerH + 10 : 12);
-    const safeBottom = Math.min(bandBottom, scrollerRect.bottom) - 14;
-
-    const r = el.getBoundingClientRect();
-    if (r.bottom > safeBottom) {
-      scroller.scrollTop += (r.bottom - safeBottom);
-    } else if (r.top < safeTop) {
-      scroller.scrollTop -= (safeTop - r.top);
-    }
-  }
-
-  function scheduleKeyboardDismissRecovery() {
-    kbRestoreTimers.forEach((id) => clearTimeout(id));
-    kbRestoreTimers = [];
-    clearKeyboardViewportState();
-    restoreIOSViewport();
-    [80, 220, 420, 620].forEach((ms) => {
-      kbRestoreTimers.push(setTimeout(() => {
-        if (!isFormField(document.activeElement)) {
-          clearKeyboardViewportState();
-          restoreIOSViewport();
-        }
-      }, ms));
-    });
   }
 
   function blurActiveInput() {
@@ -1648,80 +1597,104 @@
     }
   }
 
-  (function initIOSViewportGuard() {
-    function handleVisualViewportChange() {
-      const vv = window.visualViewport;
-      if (!vv) return;
-      const kbGap = window.innerHeight - vv.height;
-      const active = document.activeElement;
-      if (isFormField(active) && kbGap > 110) {
-        const kbTop = Math.max(0, Math.round(vv.offsetTop));
-        const kbHeight = Math.max(180, Math.round(vv.height));
-        const kbInset = Math.max(0, Math.round(window.innerHeight - (kbTop + kbHeight)));
-        document.documentElement.classList.add('ios-kb-open');
-        document.documentElement.style.setProperty('--kb-top', `${kbTop}px`);
-        document.documentElement.style.setProperty('--kb-height', `${kbHeight}px`);
-        document.documentElement.style.setProperty('--kb-inset', `${kbInset}px`);
-        requestAnimationFrame(() => scrollFocusedInputIntoVisibleBand(active));
-      } else {
-        clearKeyboardViewportState();
-        restoreIOSViewport();
-      }
-    }
-
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', handleVisualViewportChange);
-      window.visualViewport.addEventListener('scroll', handleVisualViewportChange);
-    }
-
-    window.addEventListener('resize', () => {
-      if (!isFormField(document.activeElement)) {
-        clearKeyboardViewportState();
-        restoreIOSViewport();
-      }
+  function settleNativeScrollAfterKeyboard() {
+    kbBlurTimers.forEach((id) => clearTimeout(id));
+    kbBlurTimers = [];
+    document.documentElement.classList.remove('ios-input-focused');
+    // Gentle non-invasive nudge ONLY if iOS left visualViewport.offsetTop > 0
+    [100, 280, 480].forEach((ms) => {
+      kbBlurTimers.push(setTimeout(() => {
+        if (isFormField(document.activeElement)) return;
+        document.documentElement.classList.remove('ios-input-focused');
+        if (window.visualViewport && window.visualViewport.offsetTop > 1) {
+          const y = Math.max(0, window.scrollY);
+          window.scrollTo(0, y + 1);
+          window.scrollTo(0, y);
+        }
+      }, ms));
     });
+  }
 
-    window.addEventListener('orientationchange', () => {
-      setTimeout(() => {
-        clearKeyboardViewportState();
-        restoreIOSViewport();
-      }, 180);
-    });
-
+  (function initIOSKeyboardHelper() {
     document.addEventListener('focusin', (e) => {
       if (!isFormField(e.target)) return;
-      kbRestoreTimers.forEach((id) => clearTimeout(id));
-      kbRestoreTimers = [];
-      handleVisualViewportChange();
-      setTimeout(() => {
-        handleVisualViewportChange();
-        if (document.activeElement === e.target) scrollFocusedInputIntoVisibleBand(e.target);
-      }, 120);
-      setTimeout(() => {
-        handleVisualViewportChange();
-        if (document.activeElement === e.target) scrollFocusedInputIntoVisibleBand(e.target);
-      }, 300);
+      kbBlurTimers.forEach((id) => clearTimeout(id));
+      kbBlurTimers = [];
+      document.documentElement.classList.add('ios-input-focused');
     });
 
     document.addEventListener('focusout', (e) => {
       if (!isFormField(e.target)) return;
-      // Delay slightly to distinguish moving between inputs vs dismissing keyboard
       setTimeout(() => {
         if (!isFormField(document.activeElement)) {
-          scheduleKeyboardDismissRecovery();
+          settleNativeScrollAfterKeyboard();
         }
-      }, 50);
+      }, 60);
     });
   })();
 
+  // Full-Page Native Document-Flow iOS Form Modal (Zero position:fixed keyboard glitches!)
+  function openFormModal({ title, bodyHtml, primaryLabel = '', formId = '' }) {
+    blurActiveInput();
+    // Instantly dismiss any open bottom sheet without leaving backdrop active
+    clearTimeout(sheetSettleTimer);
+    sheetBackdrop.classList.remove('is-open', 'is-settled');
+    sheetBackdrop.classList.add('hidden');
+    sheetBackdrop.setAttribute('aria-hidden', 'true');
+
+    if (modalPage.classList.contains('hidden')) {
+      savedPageScrollY = window.scrollY || 0;
+    }
+
+    const rightBtn = primaryLabel && formId
+      ? `<button type="submit" form="${esc(formId)}" class="modal-nav-btn is-primary">${esc(primaryLabel)}</button>`
+      : (primaryLabel
+        ? `<button type="button" class="modal-nav-btn is-primary" data-action="close-sheet">${esc(primaryLabel)}</button>`
+        : '<span></span>');
+
+    modalPage.innerHTML = `
+      <header class="modal-nav">
+        <div class="modal-nav-inner">
+          <button type="button" class="modal-nav-btn" data-action="close-sheet">取消</button>
+          <h2 class="modal-nav-title">${esc(title)}</h2>
+          ${rightBtn}
+        </div>
+      </header>
+      <div class="modal-body">${bodyHtml}</div>
+    `;
+
+    appShell.classList.add('is-modal-hidden');
+    modalPage.classList.remove('hidden');
+    modalPage.setAttribute('aria-hidden', 'false');
+    window.scrollTo(0, 0);
+  }
+
+  function closeFormModal() {
+    blurActiveInput();
+    document.documentElement.classList.remove('ios-input-focused');
+    if (modalPage.classList.contains('hidden')) return;
+    modalPage.classList.add('hidden');
+    modalPage.setAttribute('aria-hidden', 'true');
+    modalPage.innerHTML = '';
+    appShell.classList.remove('is-modal-hidden');
+    window.scrollTo(0, savedPageScrollY);
+    settleNativeScrollAfterKeyboard();
+  }
+
+  // Tapping blank space inside form modal cleanly dismisses iOS keyboard
+  modalPage.addEventListener('click', (e) => {
+    if (isFormField(document.activeElement) && !e.target.closest('input, textarea, select, button, label, a')) {
+      blurActiveInput();
+    }
+  });
+
   // =========================================================================
-  // Native iOS Bottom Sheet with 1:1 Touch Swipe-Down to Dismiss + Esc Key
+  // Native iOS Bottom Sheet (Non-input menus: Theme, Focus, Analytics, Account, Notebook)
   // =========================================================================
 
   function openSheet(html) {
     blurActiveInput();
-    clearKeyboardViewportState();
-    restoreIOSViewport();
+    if (!modalPage.classList.contains('hidden')) closeFormModal();
     clearTimeout(sheetSettleTimer);
     sheetPanel.style.transform = '';
     sheetPanel.classList.remove('is-dragging');
@@ -1730,7 +1703,6 @@
     sheetContent.innerHTML = html;
     sheetBackdrop.classList.remove('hidden');
     sheetBackdrop.setAttribute('aria-hidden', 'false');
-    // Force WebKit layout flush before toggling .is-open so sheet never stalls off-screen
     void sheetBackdrop.offsetHeight;
     sheetBackdrop.classList.add('is-open');
     sheetSettleTimer = setTimeout(() => {
@@ -1739,6 +1711,10 @@
   }
 
   function closeSheet() {
+    if (!modalPage.classList.contains('hidden')) {
+      closeFormModal();
+      return;
+    }
     blurActiveInput();
     clearTimeout(sheetSettleTimer);
     sheetPanel.style.transform = '';
@@ -1746,11 +1722,9 @@
     sheetBackdrop.classList.remove('is-settled');
     sheetBackdrop.classList.remove('is-open');
     sheetBackdrop.setAttribute('aria-hidden', 'true');
-    scheduleKeyboardDismissRecovery();
     setTimeout(() => {
       if (!sheetBackdrop.classList.contains('is-open')) {
         sheetBackdrop.classList.add('hidden');
-        restoreIOSViewport();
       }
     }, 300);
   }
@@ -1759,15 +1733,12 @@
     if (e.target === sheetBackdrop) closeSheet();
   });
 
-  // Tapping blank space inside sheet cleanly dismisses iOS keyboard
-  sheetPanel.addEventListener('click', (e) => {
-    if (isFormField(document.activeElement) && !e.target.closest('input, textarea, select, button, label, a')) {
-      blurActiveInput();
-    }
-  });
-
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && sheetBackdrop.classList.contains('is-open')) closeSheet();
+    if (e.key === 'Escape') {
+      if (!modalPage.classList.contains('hidden') || sheetBackdrop.classList.contains('is-open')) {
+        closeSheet();
+      }
+    }
   });
 
   // Real iOS Sheet Touch Swipe-Down Gesture on grabber bar
@@ -2093,8 +2064,9 @@ Script.complete();`;
     if (!state.data) return;
     syncHeader();
 
-    const savedScroll = mainScroll.scrollTop;
-    if (animate && typeof viewContainer.animate === 'function') {
+    const modalOpen = !modalPage.classList.contains('hidden');
+    const savedScroll = modalOpen ? savedPageScrollY : (window.scrollY || 0);
+    if (animate && !modalOpen && typeof viewContainer.animate === 'function') {
       try {
         viewContainer.animate(
           [{ opacity: 0.45, transform: 'translateY(6px)' }, { opacity: 1, transform: 'translateY(0)' }],
@@ -2142,7 +2114,7 @@ Script.complete();`;
       });
     }
 
-    if (!animate) mainScroll.scrollTop = savedScroll;
+    if (!animate && !modalOpen) window.scrollTo(0, savedScroll);
   }
 
   function buildUnifiedAuthView() {
@@ -3079,52 +3051,52 @@ Script.complete();`;
     const cats = state.data.categories || [];
     let pickedColor = SYSTEM_COLORS[cats.length % SYSTEM_COLORS.length];
 
-    openSheet(`
-      <div class="sheet-header">
-        <h2 class="sheet-title">${esc(p.catSheetTitle)}</h2>
-        ${sheetCloseBtn()}
-      </div>
-      <p style="font-size:12px;color:var(--text-secondary);margin:0 0 14px;line-height:1.5;">
-        ${esc(p.catSheetDesc)}
-      </p>
+    openFormModal({
+      title: p.catSheetTitle,
+      primaryLabel: '完成',
+      bodyHtml: `
+        <p style="font-size:12px;color:var(--text-secondary);margin:0 0 14px;line-height:1.5;">
+          ${esc(p.catSheetDesc)}
+        </p>
 
-      <form id="form-new-category" style="margin-bottom:16px;">
-        <div class="field">
-          <label class="field-label" for="input-new-cat-name">新建大标题名称</label>
-          <input id="input-new-cat-name" class="input" type="text" required maxlength="18" placeholder="${esc(p.catPlaceholder)}" />
-        </div>
-        <div class="field">
-          <label class="field-label">标记颜色</label>
-          <div class="color-swatch-row" id="cat-color-swatches">
-            ${SYSTEM_COLORS.map((c) => `
-              <button type="button" class="color-swatch ${c === pickedColor ? 'is-selected' : ''}" data-swatch="${c}" style="background:${c}" aria-label="选择颜色"></button>
+        <form id="form-new-category" style="margin-bottom:18px;">
+          <div class="field">
+            <label class="field-label" for="input-new-cat-name">新建大标题名称</label>
+            <input id="input-new-cat-name" class="input" type="text" required maxlength="18" placeholder="${esc(p.catPlaceholder)}" />
+          </div>
+          <div class="field">
+            <label class="field-label">标记颜色</label>
+            <div class="color-swatch-row" id="cat-color-swatches">
+              ${SYSTEM_COLORS.map((c) => `
+                <button type="button" class="color-swatch ${c === pickedColor ? 'is-selected' : ''}" data-swatch="${c}" style="background:${c}" aria-label="选择颜色"></button>
+              `).join('')}
+            </div>
+          </div>
+          <button type="submit" class="btn-primary btn-block">+ 添加自定义大标题</button>
+        </form>
+
+        ${cats.length ? `
+          <div style="padding-top:14px;border-top:1px solid var(--border-separator);">
+            <div class="field-label" style="margin-bottom:8px;">已有大标题（可直接修改名称后点保存）</div>
+            ${cats.map((c) => `
+              <div class="cat-manage-row" data-cat-row="${c.id}">
+                <span class="category-color-dot" style="background:${c.color}"></span>
+                <input class="cat-manage-input" type="text" maxlength="18" value="${esc(c.name)}" data-cat-input="${c.id}" />
+                <button type="button" class="btn-secondary btn-sm" data-save-cat="${c.id}">保存</button>
+                <button type="button" class="task-delete-btn" data-del-cat="${c.id}" aria-label="删除大标题">${CLOSE_ICON_SVG}</button>
+              </div>
             `).join('')}
           </div>
-        </div>
-        <button type="submit" class="btn-primary btn-block">+ 添加自定义大标题</button>
-      </form>
+        ` : `
+          <div class="empty-box" style="padding:16px 8px;font-size:12px;">还没有自定义大标题，在上方输入名称即可创建。</div>
+        `}
+      `
+    });
 
-      ${cats.length ? `
-        <div style="padding-top:14px;border-top:1px solid var(--border-separator);">
-          <div class="field-label" style="margin-bottom:8px;">已有大标题（可直接修改名称后点保存）</div>
-          ${cats.map((c) => `
-            <div class="cat-manage-row" data-cat-row="${c.id}">
-              <span class="category-color-dot" style="background:${c.color}"></span>
-              <input class="cat-manage-input" type="text" maxlength="18" value="${esc(c.name)}" data-cat-input="${c.id}" />
-              <button type="button" class="btn-secondary btn-sm" data-save-cat="${c.id}">保存</button>
-              <button type="button" class="task-delete-btn" data-del-cat="${c.id}" aria-label="删除大标题">${CLOSE_ICON_SVG}</button>
-            </div>
-          `).join('')}
-        </div>
-      ` : `
-        <div class="empty-box" style="padding:16px 8px;font-size:12px;">还没有自定义大标题，在上方输入名称即可创建。</div>
-      `}
-    `);
-
-    sheetContent.querySelectorAll('[data-swatch]').forEach((btn) => {
+    modalPage.querySelectorAll('[data-swatch]').forEach((btn) => {
       btn.addEventListener('click', () => {
         pickedColor = btn.dataset.swatch;
-        sheetContent.querySelectorAll('[data-swatch]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+        modalPage.querySelectorAll('[data-swatch]').forEach((b) => b.classList.toggle('is-selected', b === btn));
       });
     });
 
@@ -3141,11 +3113,11 @@ Script.complete();`;
       } catch (err) { showHud(err.message, 'var(--red)'); }
     });
 
-    sheetContent.querySelectorAll('[data-save-cat]').forEach((btn) => {
+    modalPage.querySelectorAll('[data-save-cat]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         blurActiveInput();
         const id = btn.dataset.saveCat;
-        const input = sheetContent.querySelector(`[data-cat-input="${id}"]`);
+        const input = modalPage.querySelector(`[data-cat-input="${id}"]`);
         const nextName = input ? input.value.trim() : '';
         if (!nextName) return;
         try {
@@ -3157,7 +3129,7 @@ Script.complete();`;
       });
     });
 
-    sheetContent.querySelectorAll('[data-del-cat]').forEach((btn) => {
+    modalPage.querySelectorAll('[data-del-cat]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         try {
           await api(`/api/categories/${btn.dataset.delCat}`, { method: 'DELETE' });
@@ -3211,99 +3183,100 @@ Script.complete();`;
         : generateReviewDates(initialDate, reviewPreset))
       : generateReviewDates(initialDate, reviewPreset);
 
-    openSheet(`
-      <div class="sheet-header">
-        <h2 class="sheet-title">${isEdit ? '编辑任务' : (taskType === 'review' ? `新建${esc(p.reviewLabel)}` : '新建学习任务')}</h2>
-        ${sheetCloseBtn()}
-      </div>
-      <form id="form-task-editor">
-        <div class="field">
-          <div class="segmented-control" style="width:100%;display:grid;grid-template-columns:1fr 1fr;">
-            <button type="button" class="seg-btn ${taskType === 'normal' ? 'is-active' : ''}" data-pick-type="normal">普通学习任务</button>
-            <button type="button" class="seg-btn ${taskType === 'review' ? 'is-active' : ''}" data-pick-type="review">${esc(p.reviewLabel)}计划</button>
-          </div>
-        </div>
-
-        <div class="field">
-          <label class="field-label" for="input-task-category">任务大标题（可自由命名或点选已有）</label>
-          <input id="input-task-category" class="input" type="text" required maxlength="18" placeholder="例如：专业课、高数、英语精读" value="${esc(initialCat)}" />
-          ${cats.length ? `
-            <div class="chip-row" id="task-cat-chips" style="margin-top:8px;">
-              ${cats.map((c) => `
-                <button type="button" class="choice-chip ${c.name === initialCat ? 'is-selected' : ''}" data-pick-cat="${esc(c.name)}">${esc(c.name)}</button>
-              `).join('')}
-            </div>
-          ` : ''}
-        </div>
-
-        <div class="field">
-          <label class="field-label" id="lbl-task-title" for="input-task-title">${taskType === 'review' ? '错题 / 复习知识点名称' : '具体任务内容'}</label>
-          <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="${taskType === 'review' ? '例如：高数定积分换元错题 / 民法善意取得易错点' : '例如：刷完第三章真题并整理笔记'}" value="${esc(initialTitle)}" />
-        </div>
-
-        <div class="form-grid-2">
+    openFormModal({
+      title: isEdit ? '编辑任务' : (taskType === 'review' ? `新建${p.reviewLabel}` : '新建学习任务'),
+      primaryLabel: '保存',
+      formId: 'form-task-editor',
+      bodyHtml: `
+        <form id="form-task-editor">
           <div class="field">
-            <label class="field-label" id="lbl-task-date" for="input-task-date">${taskType === 'review' ? '首次复习日期' : '安排日期'}</label>
-            <input id="input-task-date" class="input tabular" type="date" required value="${esc(initialDate)}" />
-          </div>
-          <div class="field">
-            <label class="field-label" for="input-task-duration">预计时长（分）</label>
-            <input id="input-task-duration" class="input tabular" type="number" min="5" max="360" value="${initialDur}" />
-          </div>
-        </div>
-
-        <div id="normal-repeat-section" class="field ${taskType === 'review' ? 'hidden' : ''}">
-          <div class="switch-row">
-            <div>
-              <div style="font-size:14px;font-weight:600;">每日自动重复</div>
-              <div style="font-size:12px;color:var(--text-secondary);">从该日期起每天自动出现在时间轴中</div>
-            </div>
-            <button type="button" id="switch-repeat" class="ios-switch ${repeatDaily ? 'is-on' : ''}" role="switch" aria-checked="${repeatDaily}"></button>
-          </div>
-        </div>
-
-        <div id="review-plan-section" class="${taskType === 'review' ? '' : 'hidden'}">
-          <div class="field">
-            <label class="field-label">智能复习周期（自动排入时间轴与月历）</label>
-            <div class="chip-row" id="review-preset-chips">
-              ${Object.values(REVIEW_PRESETS).map((pr) => `
-                <button type="button" class="choice-chip ${pr.id === reviewPreset ? 'is-selected' : ''}" data-pick-preset="${pr.id}">${esc(pr.short)}</button>
-              `).join('')}
-            </div>
-            <div id="review-preset-desc" style="font-size:12px;color:var(--text-secondary);margin-top:6px;">
-              ${esc((REVIEW_PRESETS[reviewPreset] || REVIEW_PRESETS.ebbinghaus).desc)}
-            </div>
-            <div class="review-schedule-preview" id="review-schedule-preview">
-              ${renderScheduleChipsHTML(initialDates)}
+            <div class="segmented-control" style="width:100%;display:grid;grid-template-columns:1fr 1fr;">
+              <button type="button" class="seg-btn ${taskType === 'normal' ? 'is-active' : ''}" data-pick-type="normal">普通学习任务</button>
+              <button type="button" class="seg-btn ${taskType === 'review' ? 'is-active' : ''}" data-pick-type="review">${esc(p.reviewLabel)}计划</button>
             </div>
           </div>
 
           <div class="field">
-            <label class="field-label">当前掌握程度</label>
-            <div class="chip-row" id="review-mastery-chips">
-              ${Object.values(MASTERY_LEVELS).map((m) => `
-                <button type="button" class="choice-chip ${m.id === mastery ? 'is-selected' : ''}" data-pick-mastery="${m.id}">${m.label}</button>
-              `).join('')}
-            </div>
+            <label class="field-label" for="input-task-category">任务大标题（可自由命名或点选已有）</label>
+            <input id="input-task-category" class="input" type="text" required maxlength="18" placeholder="例如：专业课、高数、英语精读" value="${esc(initialCat)}" />
+            ${cats.length ? `
+              <div class="chip-row" id="task-cat-chips" style="margin-top:8px;">
+                ${cats.map((c) => `
+                  <button type="button" class="choice-chip ${c.name === initialCat ? 'is-selected' : ''}" data-pick-cat="${esc(c.name)}">${esc(c.name)}</button>
+                `).join('')}
+              </div>
+            ` : ''}
           </div>
 
           <div class="field">
-            <label class="field-label" for="input-mistake-note">错因 / 关键解题思路（选填）</label>
-            <textarea id="input-mistake-note" class="input" maxlength="120" rows="2" placeholder="记录当时为什么做错、关键公式或易混陷阱，下次复习一眼回想…">${esc(initialNote)}</textarea>
+            <label class="field-label" id="lbl-task-title" for="input-task-title">${taskType === 'review' ? '错题 / 复习知识点名称' : '具体任务内容'}</label>
+            <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="${taskType === 'review' ? '例如：高数定积分换元错题 / 民法善意取得易错点' : '例如：刷完第三章真题并整理笔记'}" value="${esc(initialTitle)}" />
           </div>
-        </div>
 
-        <div class="sheet-sticky-footer">
-          <button type="submit" id="btn-save-task" class="btn-primary btn-block">${isEdit ? '保存修改' : (taskType === 'review' ? '生成复习计划并排入时间轴' : '添加到任务序列')}</button>
-          ${isEdit ? `
-            <div class="btn-row" style="margin-top:8px;">
-              <button type="button" id="btn-move-tomorrow" class="btn-secondary">${taskType === 'review' ? '明日加练一轮' : '移至明日'}</button>
-              <button type="button" id="btn-focus-this-task" class="btn-secondary" style="color:var(--accent);">专注此任务</button>
+          <div class="form-grid-2">
+            <div class="field">
+              <label class="field-label" id="lbl-task-date" for="input-task-date">${taskType === 'review' ? '首次复习日期' : '安排日期'}</label>
+              <input id="input-task-date" class="input tabular" type="date" required value="${esc(initialDate)}" />
             </div>
-          ` : ''}
-        </div>
-      </form>
-    `);
+            <div class="field">
+              <label class="field-label" for="input-task-duration">预计时长（分）</label>
+              <input id="input-task-duration" class="input tabular" type="number" min="5" max="360" value="${initialDur}" />
+            </div>
+          </div>
+
+          <div id="normal-repeat-section" class="field ${taskType === 'review' ? 'hidden' : ''}">
+            <div class="switch-row">
+              <div>
+                <div style="font-size:14px;font-weight:600;">每日自动重复</div>
+                <div style="font-size:12px;color:var(--text-secondary);">从该日期起每天自动出现在时间轴中</div>
+              </div>
+              <button type="button" id="switch-repeat" class="ios-switch ${repeatDaily ? 'is-on' : ''}" role="switch" aria-checked="${repeatDaily}"></button>
+            </div>
+          </div>
+
+          <div id="review-plan-section" class="${taskType === 'review' ? '' : 'hidden'}">
+            <div class="field">
+              <label class="field-label">智能复习周期（自动排入时间轴与月历）</label>
+              <div class="chip-row" id="review-preset-chips">
+                ${Object.values(REVIEW_PRESETS).map((pr) => `
+                  <button type="button" class="choice-chip ${pr.id === reviewPreset ? 'is-selected' : ''}" data-pick-preset="${pr.id}">${esc(pr.short)}</button>
+                `).join('')}
+              </div>
+              <div id="review-preset-desc" style="font-size:12px;color:var(--text-secondary);margin-top:6px;">
+                ${esc((REVIEW_PRESETS[reviewPreset] || REVIEW_PRESETS.ebbinghaus).desc)}
+              </div>
+              <div class="review-schedule-preview" id="review-schedule-preview">
+                ${renderScheduleChipsHTML(initialDates)}
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="field-label">当前掌握程度</label>
+              <div class="chip-row" id="review-mastery-chips">
+                ${Object.values(MASTERY_LEVELS).map((m) => `
+                  <button type="button" class="choice-chip ${m.id === mastery ? 'is-selected' : ''}" data-pick-mastery="${m.id}">${m.label}</button>
+                `).join('')}
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="field-label" for="input-mistake-note">错因 / 关键解题思路（选填）</label>
+              <textarea id="input-mistake-note" class="input" maxlength="120" rows="3" placeholder="记录当时为什么做错、关键公式或易混陷阱，下次复习一眼回想…">${esc(initialNote)}</textarea>
+            </div>
+          </div>
+
+          <div style="margin-top:14px;">
+            <button type="submit" id="btn-save-task" class="btn-primary btn-block">${isEdit ? '保存修改' : (taskType === 'review' ? '生成复习计划并排入时间轴' : '添加到任务序列')}</button>
+            ${isEdit ? `
+              <div class="btn-row" style="margin-top:10px;">
+                <button type="button" id="btn-move-tomorrow" class="btn-secondary">${taskType === 'review' ? '明日加练一轮' : '移至明日'}</button>
+                <button type="button" id="btn-focus-this-task" class="btn-secondary" style="color:var(--accent);">专注此任务</button>
+              </div>
+            ` : ''}
+          </div>
+        </form>
+      `
+    });
 
     const catInput = document.getElementById('input-task-category');
     const titleLabel = document.getElementById('lbl-task-title');
@@ -3322,10 +3295,10 @@ Script.complete();`;
       presetDescEl.textContent = (REVIEW_PRESETS[reviewPreset] || REVIEW_PRESETS.ebbinghaus).desc;
     }
 
-    sheetContent.querySelectorAll('[data-pick-type]').forEach((btn) => {
+    modalPage.querySelectorAll('[data-pick-type]').forEach((btn) => {
       btn.addEventListener('click', () => {
         taskType = btn.dataset.pickType;
-        sheetContent.querySelectorAll('[data-pick-type]').forEach((b) => b.classList.toggle('is-active', b === btn));
+        modalPage.querySelectorAll('[data-pick-type]').forEach((b) => b.classList.toggle('is-active', b === btn));
         const isRev = taskType === 'review';
         normalSec.classList.toggle('hidden', isRev);
         reviewSec.classList.toggle('hidden', !isRev);
@@ -3340,19 +3313,19 @@ Script.complete();`;
       });
     });
 
-    sheetContent.querySelectorAll('[data-pick-preset]').forEach((btn) => {
+    modalPage.querySelectorAll('[data-pick-preset]').forEach((btn) => {
       btn.addEventListener('click', () => {
         reviewPreset = btn.dataset.pickPreset;
         scheduleDirty = true;
-        sheetContent.querySelectorAll('[data-pick-preset]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+        modalPage.querySelectorAll('[data-pick-preset]').forEach((b) => b.classList.toggle('is-selected', b === btn));
         refreshReviewPreview();
       });
     });
 
-    sheetContent.querySelectorAll('[data-pick-mastery]').forEach((btn) => {
+    modalPage.querySelectorAll('[data-pick-mastery]').forEach((btn) => {
       btn.addEventListener('click', () => {
         mastery = btn.dataset.pickMastery;
-        sheetContent.querySelectorAll('[data-pick-mastery]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+        modalPage.querySelectorAll('[data-pick-mastery]').forEach((b) => b.classList.toggle('is-selected', b === btn));
       });
     });
 
@@ -3363,16 +3336,16 @@ Script.complete();`;
       }
     });
 
-    sheetContent.querySelectorAll('[data-pick-cat]').forEach((btn) => {
+    modalPage.querySelectorAll('[data-pick-cat]').forEach((btn) => {
       btn.addEventListener('click', () => {
         catInput.value = btn.dataset.pickCat;
-        sheetContent.querySelectorAll('[data-pick-cat]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+        modalPage.querySelectorAll('[data-pick-cat]').forEach((b) => b.classList.toggle('is-selected', b === btn));
       });
     });
 
     catInput.addEventListener('input', () => {
       const val = catInput.value.trim();
-      sheetContent.querySelectorAll('[data-pick-cat]').forEach((b) => b.classList.toggle('is-selected', b.dataset.pickCat === val));
+      modalPage.querySelectorAll('[data-pick-cat]').forEach((b) => b.classList.toggle('is-selected', b.dataset.pickCat === val));
     });
 
     const sw = document.getElementById('switch-repeat');
@@ -3602,40 +3575,41 @@ Script.complete();`;
   function openExamEditorSheet(existingExam = null) {
     const isEdit = Boolean(existingExam);
     let pickedColor = isEdit ? (existingExam.color || '#0071E3') : '#0071E3';
-    openSheet(`
-      <div class="sheet-header">
-        <h2 class="sheet-title">${isEdit ? '编辑目标倒计时' : '设定考试 / 目标倒计时'}</h2>
-        ${sheetCloseBtn()}
-      </div>
-      <form id="form-exam-editor">
-        <div class="field">
-          <label class="field-label" for="input-exam-name">考试或目标名称</label>
-          <input id="input-exam-name" class="input" type="text" required maxlength="30" placeholder="例如：2027 全国考研初试" value="${esc(isEdit ? existingExam.name : '')}" />
-        </div>
-        <div class="field">
-          <label class="field-label" for="input-exam-date">目标日期</label>
-          <input id="input-exam-date" class="input tabular" type="date" required value="${esc(isEdit ? existingExam.targetDate : addDaysStr(60))}" />
-        </div>
-        <div class="field">
-          <label class="field-label" for="input-exam-tag">阶段标签</label>
-          <input id="input-exam-tag" class="input" type="text" maxlength="12" value="${esc(isEdit ? existingExam.tag : '核心目标')}" />
-        </div>
-        <div class="field">
-          <label class="field-label">主题标识色</label>
-          <div class="color-swatch-row">
-            ${SYSTEM_COLORS.map((c) => `
-              <button type="button" class="color-swatch ${c === pickedColor ? 'is-selected' : ''}" data-exam-swatch="${c}" style="background:${c}" aria-label="选择颜色"></button>
-            `).join('')}
+    openFormModal({
+      title: isEdit ? '编辑目标倒计时' : '设定考试倒计时',
+      primaryLabel: '保存',
+      formId: 'form-exam-editor',
+      bodyHtml: `
+        <form id="form-exam-editor">
+          <div class="field">
+            <label class="field-label" for="input-exam-name">考试或目标名称</label>
+            <input id="input-exam-name" class="input" type="text" required maxlength="30" placeholder="例如：2027 全国考研初试" value="${esc(isEdit ? existingExam.name : '')}" />
           </div>
-        </div>
-        <button type="submit" class="btn-primary btn-block">${isEdit ? '保存更改' : '保存并置顶显示'}</button>
-      </form>
-    `);
+          <div class="field">
+            <label class="field-label" for="input-exam-date">目标日期</label>
+            <input id="input-exam-date" class="input tabular" type="date" required value="${esc(isEdit ? existingExam.targetDate : addDaysStr(60))}" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="input-exam-tag">阶段标签</label>
+            <input id="input-exam-tag" class="input" type="text" maxlength="12" value="${esc(isEdit ? existingExam.tag : '核心目标')}" />
+          </div>
+          <div class="field">
+            <label class="field-label">主题标识色</label>
+            <div class="color-swatch-row">
+              ${SYSTEM_COLORS.map((c) => `
+                <button type="button" class="color-swatch ${c === pickedColor ? 'is-selected' : ''}" data-exam-swatch="${c}" style="background:${c}" aria-label="选择颜色"></button>
+              `).join('')}
+            </div>
+          </div>
+          <button type="submit" class="btn-primary btn-block">${isEdit ? '保存更改' : '保存并置顶显示'}</button>
+        </form>
+      `
+    });
 
-    sheetContent.querySelectorAll('[data-exam-swatch]').forEach((btn) => {
+    modalPage.querySelectorAll('[data-exam-swatch]').forEach((btn) => {
       btn.addEventListener('click', () => {
         pickedColor = btn.dataset.examSwatch;
-        sheetContent.querySelectorAll('[data-exam-swatch]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+        modalPage.querySelectorAll('[data-exam-swatch]').forEach((b) => b.classList.toggle('is-selected', b === btn));
       });
     });
 
@@ -3668,31 +3642,32 @@ Script.complete();`;
   }
 
   function openCreateGroupSheet() {
-    openSheet(`
-      <div class="sheet-header">
-        <h2 class="sheet-title">创建学习小组</h2>
-        ${sheetCloseBtn()}
-      </div>
-      <form id="form-create-group">
-        <div class="field">
-          <label class="field-label" for="input-group-name">小组名称</label>
-          <input id="input-group-name" class="input" type="text" required maxlength="24" placeholder="例如：考研每日打卡小组" />
-        </div>
-        <div class="field">
-          <label class="field-label" for="input-group-exam">共同备考目标</label>
-          <input id="input-group-exam" class="input" type="text" required maxlength="24" placeholder="例如：2027 考研初试" />
-        </div>
-        <div class="field">
-          <label class="field-label" for="input-group-date">共同目标日期</label>
-          <input id="input-group-date" class="input tabular" type="date" required value="${addDaysStr(80)}" />
-        </div>
-        <div class="field">
-          <label class="field-label" for="input-group-notice">小组公告</label>
-          <input id="input-group-notice" class="input" type="text" maxlength="60" value="每天按计划完成打卡，互相监督。" />
-        </div>
-        <button type="submit" class="btn-primary btn-block">立即创建并生成邀请码</button>
-      </form>
-    `);
+    openFormModal({
+      title: '创建学习小组',
+      primaryLabel: '创建',
+      formId: 'form-create-group',
+      bodyHtml: `
+        <form id="form-create-group">
+          <div class="field">
+            <label class="field-label" for="input-group-name">小组名称</label>
+            <input id="input-group-name" class="input" type="text" required maxlength="24" placeholder="例如：考研每日打卡小组" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="input-group-exam">共同备考目标</label>
+            <input id="input-group-exam" class="input" type="text" required maxlength="24" placeholder="例如：2027 考研初试" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="input-group-date">共同目标日期</label>
+            <input id="input-group-date" class="input tabular" type="date" required value="${addDaysStr(80)}" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="input-group-notice">小组公告</label>
+            <input id="input-group-notice" class="input" type="text" maxlength="60" value="每天按计划完成打卡，互相监督。" />
+          </div>
+          <button type="submit" class="btn-primary btn-block">立即创建并生成邀请码</button>
+        </form>
+      `
+    });
 
     document.getElementById('form-create-group').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -3713,26 +3688,27 @@ Script.complete();`;
   }
 
   function openJoinGroupSheet(prefillCode = '', sharedGroup = null) {
-    openSheet(`
-      <div class="sheet-header">
-        <h2 class="sheet-title">加入学习小组</h2>
-        ${sheetCloseBtn()}
-      </div>
-      <form id="form-join-group">
-        ${sharedGroup ? `
-          <div class="card card-padded" style="margin-bottom:14px;background:var(--bg-surface);">
-            <div style="font-size:12px;color:var(--accent);font-weight:600;">收到学习小组邀请</div>
-            <div style="font-size:16px;font-weight:700;margin-top:4px;">${esc(sharedGroup.name)}</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">共同目标：${esc(sharedGroup.examName)} · ${esc(sharedGroup.targetDate)}</div>
+    openFormModal({
+      title: '加入学习小组',
+      primaryLabel: '加入',
+      formId: 'form-join-group',
+      bodyHtml: `
+        <form id="form-join-group">
+          ${sharedGroup ? `
+            <div class="card card-padded" style="margin-bottom:14px;background:var(--bg-surface);">
+              <div style="font-size:12px;color:var(--accent);font-weight:600;">收到学习小组邀请</div>
+              <div style="font-size:16px;font-weight:700;margin-top:4px;">${esc(sharedGroup.name)}</div>
+              <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">共同目标：${esc(sharedGroup.examName)} · ${esc(sharedGroup.targetDate)}</div>
+            </div>
+          ` : ''}
+          <div class="field">
+            <label class="field-label" for="input-join-code">输入 6 位小组邀请码</label>
+            <input id="input-join-code" class="input tabular" style="text-transform:uppercase;letter-spacing:0.12em;font-weight:700;" type="text" required maxlength="8" placeholder="输入 6 位邀请码" value="${esc(prefillCode)}" />
           </div>
-        ` : ''}
-        <div class="field">
-          <label class="field-label" for="input-join-code">输入 6 位小组邀请码</label>
-          <input id="input-join-code" class="input tabular" style="text-transform:uppercase;letter-spacing:0.12em;font-weight:700;" type="text" required maxlength="8" placeholder="输入 6 位邀请码" value="${esc(prefillCode)}" />
-        </div>
-        <button type="submit" class="btn-primary btn-block">立即加入小组</button>
-      </form>
-    `);
+          <button type="submit" class="btn-primary btn-block">立即加入小组</button>
+        </form>
+      `
+    });
 
     document.getElementById('form-join-group').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -4129,17 +4105,18 @@ Script.complete();`;
     btn.addEventListener('click', () => {
       if (!state.data || !state.data.user) { showHud('请先登录或注册统一账户', 'var(--accent)'); return; }
       const next = btn.dataset.tab;
-      if (next === state.activeTab) { mainScroll.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+      if (next === state.activeTab) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
       state.activeTab = next;
       syncTabButtons();
-      mainScroll.scrollTop = 0;
+      window.scrollTo(0, 0);
       topNav.classList.remove('is-scrolled');
       renderView(true);
     });
   });
 
-  mainScroll.addEventListener('scroll', () => {
-    topNav.classList.toggle('is-scrolled', mainScroll.scrollTop > 32);
+  window.addEventListener('scroll', () => {
+    if (!modalPage.classList.contains('hidden')) return;
+    topNav.classList.toggle('is-scrolled', window.scrollY > 28);
   }, { passive: true });
 
   document.getElementById('nav-user-btn').addEventListener('click', openAccountSheet);
@@ -4246,11 +4223,11 @@ Script.complete();`;
     }
 
     if (action === 'goto-groups') {
-      state.activeTab = 'groups'; syncTabButtons(); mainScroll.scrollTop = 0; renderView(true); return;
+      state.activeTab = 'groups'; syncTabButtons(); window.scrollTo(0, 0); renderView(true); return;
     }
 
     if (action === 'goto-exams') {
-      state.activeTab = 'exams'; syncTabButtons(); mainScroll.scrollTop = 0; renderView(true); return;
+      state.activeTab = 'exams'; syncTabButtons(); window.scrollTo(0, 0); renderView(true); return;
     }
 
     if (action === 'select-group') {
