@@ -1,16 +1,16 @@
 (() => {
   'use strict';
 
-  const STORE_KEY = 'shixu_local_store_v1';
+  const STORE_KEY = 'shixu_raw_store_v2';
   const AVATAR_COLORS = ['#0071E3', '#34C759', '#FF9500', '#FF3B30', '#0A84FF', '#30B0C7'];
   const SUBJECT_PRESETS = ['数学', '英语', '政治', '专业课', '词汇', '复盘', '日常'];
   const EXAM_PRESETS = [
-    { name: '2027 全国考研初试', tag: '一志愿冲刺', days: 86, color: '#0071E3' },
-    { name: '国家公务员笔试', tag: '行测 + 申论', days: 52, color: '#FF9500' },
-    { name: '雅思 7.5 冲刺考', tag: '听说读写', days: 34, color: '#34C759' },
-    { name: 'CPA 专业阶段考试', tag: '注册会计师', days: 128, color: '#0071E3' },
-    { name: '国家统一法考客观题', tag: '法考冲刺', days: 95, color: '#FF3B30' },
-    { name: '全国普通高考', tag: '本科冲刺', days: 196, color: '#30B0C7' }
+    { name: '全国考研初试', tag: '考试倒计时', days: 90, color: '#0071E3' },
+    { name: '国家公务员笔试', tag: '考试倒计时', days: 60, color: '#FF9500' },
+    { name: '雅思冲刺考试', tag: '语言目标', days: 45, color: '#34C759' },
+    { name: 'CPA 专业阶段', tag: '资格考试', days: 120, color: '#0071E3' },
+    { name: '国家统一法考', tag: '资格考试', days: 100, color: '#FF3B30' },
+    { name: '全国普通高考', tag: '考试倒计时', days: 180, color: '#30B0C7' }
   ];
 
   const TAB_TITLES = {
@@ -22,22 +22,23 @@
 
   const state = {
     mode: 'auto', // 'server' | 'local'
-    userId: localStorage.getItem('shixu_user_id') || 'u_chen',
+    userId: localStorage.getItem('shixu_raw_user_id') || '',
     theme: localStorage.getItem('shixu_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
     activeTab: 'today',
     activeGroupId: null,
+    pendingInvite: null,
     data: null,
     scriptableCode: '',
     focus: {
       presetMin: 25,
       remainingSec: 25 * 60,
       running: false,
-      label: '深度专注自习',
+      label: '专注学习',
       timerId: null
     }
   };
 
-  const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('shixu_realtime') : null;
+  const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('shixu_raw_realtime') : null;
 
   // DOM refs
   const topNav = document.getElementById('top-nav');
@@ -192,67 +193,17 @@
   }
 
   // =========================================================================
-  // Zero-Cost Static Local Engine (Automatic fallback for GitHub Pages)
+  // Pure Raw Clean Local Engine (Zero pre-filled fake data)
   // =========================================================================
 
-  function createLocalSeed() {
-    const today = todayKey();
-    const now = Date.now();
+  function createEmptyLocalStore() {
     return {
-      lastRolloverDate: today,
-      users: [
-        { id: 'u_chen', name: '陈同学', avatar: '陈', color: '#0071E3', streak: 21, focusMinutesToday: 85, createdAt: now - 86400000 * 21 },
-        { id: 'u_lin', name: '林晚', avatar: '林', color: '#34C759', streak: 29, focusMinutesToday: 135, createdAt: now - 86400000 * 29 },
-        { id: 'u_zhou', name: '周屿', avatar: '周', color: '#FF9500', streak: 16, focusMinutesToday: 60, createdAt: now - 86400000 * 16 },
-        { id: 'u_shen', name: '沈南', avatar: '沈', color: '#30B0C7', streak: 9, focusMinutesToday: 40, createdAt: now - 86400000 * 9 }
-      ],
-      exams: [
-        { id: 'ex_1', userId: 'u_chen', name: '2027 全国考研初试', tag: '一志愿冲刺', startDate: addDaysStr(-114), targetDate: addDaysStr(86), color: '#0071E3', pinned: true },
-        { id: 'ex_2', userId: 'u_chen', name: '雅思 7.5 阶段模考', tag: '英语提分', startDate: addDaysStr(-46), targetDate: addDaysStr(34), color: '#34C759', pinned: false },
-        { id: 'ex_3', userId: 'u_chen', name: '专业课一轮精读结课', tag: '阶段里程碑', startDate: addDaysStr(-30), targetDate: addDaysStr(18), color: '#FF9500', pinned: false },
-        { id: 'ex_4', userId: 'u_lin', name: '2027 全国考研初试', tag: '一志愿冲刺', startDate: addDaysStr(-114), targetDate: addDaysStr(86), color: '#0071E3', pinned: true },
-        { id: 'ex_5', userId: 'u_zhou', name: '2027 全国考研初试', tag: '一志愿冲刺', startDate: addDaysStr(-114), targetDate: addDaysStr(86), color: '#0071E3', pinned: true },
-        { id: 'ex_6', userId: 'u_shen', name: '2027 全国考研初试', tag: '一志愿冲刺', startDate: addDaysStr(-114), targetDate: addDaysStr(86), color: '#0071E3', pinned: true }
-      ],
-      tasks: [
-        { id: 't_1', userId: 'u_chen', title: '高数真题 2023 套卷精刷与错题归因', subject: '数学', durationMin: 90, repeatDaily: true, done: true, date: today, completedAt: now - 7200000 },
-        { id: 't_2', userId: 'u_chen', title: '英语一阅读 2 篇 + 长难句精翻', subject: '英语', durationMin: 45, repeatDaily: true, done: true, date: today, completedAt: now - 3600000 },
-        { id: 't_3', userId: 'u_chen', title: '政治马原高频选择题 50 道', subject: '政治', durationMin: 35, repeatDaily: true, done: false, date: today, completedAt: null },
-        { id: 't_4', userId: 'u_chen', title: '专业课核心简答题默写整理', subject: '专业课', durationMin: 60, repeatDaily: false, done: false, date: today, completedAt: null },
-
-        { id: 't_5', userId: 'u_lin', title: '高数二刷错题本整理', subject: '数学', durationMin: 75, repeatDaily: true, done: true, date: today, completedAt: now - 5400000 },
-        { id: 't_6', userId: 'u_lin', title: '英语高频词汇 120 词复习', subject: '英语', durationMin: 30, repeatDaily: true, done: true, date: today, completedAt: now - 4200000 },
-        { id: 't_7', userId: 'u_lin', title: '政治史纲时间轴背诵', subject: '政治', durationMin: 40, repeatDaily: true, done: true, date: today, completedAt: now - 1800000 },
-        { id: 't_8', userId: 'u_lin', title: '专业课真题论述框架梳理', subject: '专业课', durationMin: 60, repeatDaily: true, done: true, date: today, completedAt: now - 600000 },
-
-        { id: 't_9', userId: 'u_zhou', title: '肖秀荣 1000 题马原单选', subject: '政治', durationMin: 45, repeatDaily: true, done: true, date: today, completedAt: now - 3200000 },
-        { id: 't_10', userId: 'u_zhou', title: '英语阅读精读 2 篇', subject: '英语', durationMin: 50, repeatDaily: true, done: true, date: today, completedAt: now - 2000000 },
-        { id: 't_11', userId: 'u_zhou', title: '线代特征值专题训练', subject: '数学', durationMin: 60, repeatDaily: true, done: true, date: today, completedAt: now - 1200000 },
-        { id: 't_12', userId: 'u_zhou', title: '专业课第二章笔记复盘', subject: '专业课', durationMin: 50, repeatDaily: false, done: false, date: today, completedAt: null },
-
-        { id: 't_13', userId: 'u_shen', title: '晨起背诵英语核心词 60 个', subject: '英语', durationMin: 30, repeatDaily: true, done: true, date: today, completedAt: now - 5000000 },
-        { id: 't_14', userId: 'u_shen', title: '高数中值定理讲义复习', subject: '数学', durationMin: 60, repeatDaily: true, done: false, date: today, completedAt: null },
-        { id: 't_15', userId: 'u_shen', title: '专业课真题案例分析', subject: '专业课', durationMin: 55, repeatDaily: true, done: false, date: today, completedAt: null },
-        { id: 't_16', userId: 'u_shen', title: '英语大作文模板默写', subject: '英语', durationMin: 35, repeatDaily: true, done: false, date: today, completedAt: null }
-      ],
-      groups: [
-        {
-          id: 'g_kaoyan',
-          name: '2027 考研上岸冲刺组',
-          inviteCode: 'KY2027',
-          examName: '2027 全国考研初试',
-          targetDate: addDaysStr(86),
-          notice: '每晚 22:30 前完成今日清单打卡，互相监督不摆烂。',
-          ownerId: 'u_chen',
-          memberIds: ['u_chen', 'u_lin', 'u_zhou', 'u_shen'],
-          createdAt: now - 86400000 * 14
-        }
-      ],
-      feeds: [
-        { id: 'f_1', groupId: 'g_kaoyan', userId: 'u_lin', type: 'checkin', text: '完成了今日全部 4 项学习任务，达成率 100%', createdAt: now - 600000, likedBy: ['u_chen', 'u_zhou', 'u_shen'] },
-        { id: 'f_2', groupId: 'g_kaoyan', userId: 'u_zhou', type: 'checkin', text: '打卡「线代特征值专题训练」· 60 分钟', createdAt: now - 1200000, likedBy: ['u_lin', 'u_chen'] },
-        { id: 'f_3', groupId: 'g_kaoyan', userId: 'u_chen', type: 'checkin', text: '打卡「英语一阅读 2 篇 + 长难句精翻」· 45 分钟', createdAt: now - 3600000, likedBy: ['u_lin'] }
-      ]
+      lastRolloverDate: todayKey(),
+      users: [],
+      exams: [],
+      tasks: [],
+      groups: [],
+      feeds: []
     };
   }
 
@@ -260,7 +211,7 @@
     let s = null;
     try { s = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); } catch {}
     if (!s || !Array.isArray(s.users)) {
-      s = createLocalSeed();
+      s = createEmptyLocalStore();
       localStorage.setItem(STORE_KEY, JSON.stringify(s));
     }
     const today = todayKey();
@@ -287,8 +238,11 @@
 
   function buildLocalBootstrap(userId) {
     const s = getLocalStore();
-    const user = s.users.find((u) => u.id === userId) || s.users[0];
+    const user = s.users.find((u) => u.id === userId) || s.users[0] || null;
     const today = todayKey();
+    if (!user) {
+      return { today, user: null, users: [], tasks: [], exams: [], groups: [] };
+    }
     const tasks = s.tasks
       .filter((t) => t.userId === user.id && t.date === today)
       .sort((a, b) => Number(a.done) - Number(b.done));
@@ -316,7 +270,7 @@
           .sort((a, b) => b.createdAt - a.createdAt)
           .slice(0, 30)
           .map((f) => {
-            const u = s.users.find((x) => x.id === f.userId) || { name: '同学', avatar: '学', color: '#0071E3' };
+            const u = s.users.find((x) => x.id === f.userId) || { name: '成员', avatar: '学', color: '#0071E3' };
             return { ...f, userName: u.name, userAvatar: u.avatar, userColor: u.color };
           });
         return {
@@ -344,6 +298,12 @@
     const s = getLocalStore();
     const today = todayKey();
 
+    if (method === 'POST' && path === '/api/reset') {
+      const empty = createEmptyLocalStore();
+      saveLocalStore(empty);
+      return { ok: true };
+    }
+
     if (method === 'POST' && path === '/api/users') {
       const name = String(body.name || '').trim().slice(0, 16);
       if (!name) throw new Error('请输入昵称');
@@ -352,32 +312,36 @@
         name,
         avatar: name.slice(0, 1),
         color: AVATAR_COLORS[s.users.length % AVATAR_COLORS.length],
-        streak: 1,
+        streak: 0,
         focusMinutesToday: 0,
         createdAt: Date.now()
       };
       s.users.push(user);
-      s.exams.push({
-        id: genId('ex'),
-        userId: user.id,
-        name: '2027 全国考研初试',
-        tag: '核心目标',
-        startDate: today,
-        targetDate: addDaysStr(86),
-        color: '#0071E3',
-        pinned: true
-      });
-      s.tasks.push(
-        { id: genId('t'), userId: user.id, title: '制定今日核心学习任务清单', subject: '规划', durationMin: 15, repeatDaily: true, done: false, date: today, completedAt: null },
-        { id: genId('t'), userId: user.id, title: '完成第一轮 45 分钟深度专注学习', subject: '专注', durationMin: 45, repeatDaily: true, done: false, date: today, completedAt: null }
-      );
+
       if (body.joinCode) {
-        const grp = s.groups.find((g) => g.inviteCode === String(body.joinCode).trim().toUpperCase());
-        if (grp && !grp.memberIds.includes(user.id)) {
+        const code = String(body.joinCode).trim().toUpperCase();
+        let grp = s.groups.find((g) => g.inviteCode === code);
+        if (!grp && body.sharedGroup && body.sharedGroup.name) {
+          grp = {
+            id: genId('g'),
+            name: body.sharedGroup.name,
+            inviteCode: code,
+            examName: body.sharedGroup.examName || '共同目标',
+            targetDate: body.sharedGroup.targetDate || addDaysStr(60),
+            notice: body.sharedGroup.notice || '每天按计划完成打卡。',
+            ownerId: user.id,
+            memberIds: [user.id],
+            createdAt: Date.now()
+          };
+          s.groups.push(grp);
+        } else if (grp && !grp.memberIds.includes(user.id)) {
           grp.memberIds.push(user.id);
-          s.feeds.push({ id: genId('f'), groupId: grp.id, userId: user.id, type: 'join', text: `加入了学习小组，一起冲刺「${grp.examName}」`, createdAt: Date.now(), likedBy: [] });
+        }
+        if (grp) {
+          s.feeds.push({ id: genId('f'), groupId: grp.id, userId: user.id, type: 'join', text: `加入了学习小组`, createdAt: Date.now(), likedBy: [] });
         }
       }
+
       saveLocalStore(s);
       return { user };
     }
@@ -412,16 +376,17 @@
       }
       let toastMsg = null;
       if (!prev && task.done) {
+        const u = s.users.find((x) => x.id === task.userId);
+        if (u && u.streak === 0) u.streak = 1;
         const myList = s.tasks.filter((t) => t.userId === task.userId && t.date === today);
         const doneCnt = myList.filter((t) => t.done).length;
-        const u = s.users.find((x) => x.id === task.userId);
         for (const g of s.groups.filter((gr) => gr.memberIds.includes(task.userId))) {
           const text = doneCnt === myList.length
             ? `完成了今日全部 ${myList.length} 项学习任务，达成率 100%`
             : `打卡「${task.title}」· ${task.durationMin} 分钟`;
           s.feeds.push({ id: genId('f'), groupId: g.id, userId: task.userId, type: 'checkin', text, createdAt: Date.now(), likedBy: [] });
         }
-        toastMsg = `${u ? u.name : '组员'} 刚刚完成打卡：${task.title.slice(0, 14)}`;
+        toastMsg = `${u ? u.name : '成员'} 刚刚完成打卡：${task.title.slice(0, 14)}`;
       }
       saveLocalStore(s, toastMsg);
       return { task };
@@ -484,8 +449,9 @@
       if (u) {
         const mins = Math.min(240, Math.max(1, Number(body.minutes) || 25));
         u.focusMinutesToday = (u.focusMinutesToday || 0) + mins;
+        if (u.streak === 0) u.streak = 1;
         for (const g of s.groups.filter((gr) => gr.memberIds.includes(u.id))) {
-          s.feeds.push({ id: genId('f'), groupId: g.id, userId: u.id, type: 'focus', text: `完成了 ${mins} 分钟沉浸专注「${body.label || '深度专注自习'}」`, createdAt: Date.now(), likedBy: [] });
+          s.feeds.push({ id: genId('f'), groupId: g.id, userId: u.id, type: 'focus', text: `完成了 ${mins} 分钟沉浸专注「${body.label || '专注学习'}」`, createdAt: Date.now(), likedBy: [] });
         }
       }
       saveLocalStore(s);
@@ -502,7 +468,7 @@
         inviteCode,
         examName: String(body.examName || '共同备考目标').trim().slice(0, 24),
         targetDate: body.targetDate || addDaysStr(60),
-        notice: String(body.notice || '每天按计划完成打卡，稳步冲刺上岸。').trim().slice(0, 60),
+        notice: String(body.notice || '每天按计划完成打卡，互相监督。').trim().slice(0, 60),
         ownerId,
         memberIds: [ownerId],
         createdAt: Date.now()
@@ -530,11 +496,11 @@
           createdAt: Date.now()
         };
         s.groups.push(grp);
-        s.feeds.push({ id: genId('f'), groupId: grp.id, userId: uid, type: 'join', text: `通过微信邀请链接加入了「${grp.name}」`, createdAt: Date.now(), likedBy: [] });
+        s.feeds.push({ id: genId('f'), groupId: grp.id, userId: uid, type: 'join', text: `通过邀请链接加入了「${grp.name}」`, createdAt: Date.now(), likedBy: [] });
         saveLocalStore(s);
         return { group: grp };
       }
-      if (!grp) throw new Error('未找到该邀请码对应的学习小组（演示码：KY2027）');
+      if (!grp) throw new Error('未找到该邀请码对应的学习小组，请先创建小组或确认邀请码');
       if (!grp.memberIds.includes(uid)) {
         grp.memberIds.push(uid);
         s.feeds.push({ id: genId('f'), groupId: grp.id, userId: uid, type: 'join', text: `加入小组，共同冲刺「${grp.examName}」`, createdAt: Date.now(), likedBy: [] });
@@ -550,8 +516,8 @@
       if (!fromUser || !toUser) throw new Error('成员不存在');
       const kind = body.kind === 'cheer' ? 'cheer' : 'nudge';
       const text = kind === 'cheer'
-        ? `给 ${toUser.name} 送上了鼓励，状态拉满`
-        : `拍了拍 ${toUser.name}：距离考试又近一天，快去打卡`;
+        ? `给 ${toUser.name} 送上了鼓励`
+        : `拍了拍 ${toUser.name}：该学习打卡啦`;
       s.feeds.push({ id: genId('f'), groupId: nMatch[1], userId: fromUser.id, type: kind, text, createdAt: Date.now(), likedBy: [] });
       saveLocalStore(s, `${fromUser.name} ${kind === 'cheer' ? '鼓励了' : '拍了拍'} ${toUser.name}`);
       return { ok: true };
@@ -574,11 +540,11 @@
   }
 
   function buildLocalScriptableCode() {
-    const pinned = (state.data && state.data.exams[0]) || { name: '2027 全国考研初试', targetDate: addDaysStr(86) };
+    const pinned = (state.data && state.data.exams[0]) || { name: '尚未设定目标', targetDate: todayKey() };
     const tasks = (state.data && state.data.tasks.slice(0, 3)) || [];
     const appUrl = window.location.origin + window.location.pathname;
     const tasksJson = JSON.stringify(tasks.map((t) => ({ title: t.title, done: t.done })));
-    return `// 时序 StudyOS · iOS 桌面实时倒计时小组件 (Scriptable 零成本独立版)
+    return `// 时序 StudyOS · iOS 桌面实时倒计时小组件 (Scriptable)
 // 1. App Store 免费安装 Scriptable  2. 新建脚本粘贴此代码  3. 桌面长按添加 Scriptable 中号小组件
 const APP_URL = ${JSON.stringify(appUrl)};
 const EXAM_NAME = ${JSON.stringify(pinned.name)};
@@ -616,25 +582,26 @@ const dt = left.addText(TARGET_DATE); dt.font = Font.semiboldSystemFont(11); dt.
 row.addSpacer(14);
 const right = row.addStack();
 right.layoutVertically();
-const hd = right.addText("今日学习重点"); hd.font = Font.semiboldSystemFont(12); hd.textColor = fg;
+const hd = right.addText("今日学习任务"); hd.font = Font.semiboldSystemFont(12); hd.textColor = fg;
 right.addSpacer(6);
-for (const item of TASKS) {
-  const tr = right.addStack(); tr.centerAlignContent();
-  const mk = tr.addText(item.done ? "● " : "○ "); mk.font = Font.systemFont(11); mk.textColor = item.done ? accent : muted;
-  const tx = tr.addText(item.title); tx.font = Font.mediumSystemFont(12); tx.textColor = item.done ? muted : fg; tx.lineLimit = 1;
-  right.addSpacer(4);
+if (!TASKS.length) {
+  const em = right.addText("点击打开网页添加任务"); em.font = Font.mediumSystemFont(12); em.textColor = muted;
+} else {
+  for (const item of TASKS) {
+    const tr = right.addStack(); tr.centerAlignContent();
+    const mk = tr.addText(item.done ? "● " : "○ "); mk.font = Font.systemFont(11); mk.textColor = item.done ? accent : muted;
+    const tx = tr.addText(item.title); tx.font = Font.mediumSystemFont(12); tx.textColor = item.done ? muted : fg; tx.lineLimit = 1;
+    right.addSpacer(4);
+  }
 }
 if (config.runsInWidget) Script.setWidget(w); else await w.presentMedium();
 Script.complete();`;
   }
 
-  // Unified API dispatcher (Server Mode vs Zero-Cost Local Mode)
   async function api(path, options = {}) {
     const method = options.method || 'GET';
     const body = options.body ? JSON.parse(options.body) : {};
-    if (state.mode === 'local') {
-      return localApi(path, method, body);
-    }
+    if (state.mode === 'local') return localApi(path, method, body);
     const res = await fetch(`.${path}`, {
       headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
       ...options
@@ -646,7 +613,6 @@ Script.complete();`;
     return payload;
   }
 
-  // Theme management
   function applyTheme(theme) {
     state.theme = theme;
     localStorage.setItem('shixu_theme', theme);
@@ -659,7 +625,6 @@ Script.complete();`;
     document.getElementById('theme-icon-moon').classList.toggle('hidden', theme !== 'dark');
   }
 
-  // Bottom Sheet management
   function openSheet(html) {
     sheetContent.innerHTML = html;
     sheetBackdrop.classList.remove('hidden');
@@ -679,7 +644,6 @@ Script.complete();`;
     if (e.target === sheetBackdrop) closeSheet();
   });
 
-  // Data Loading (auto-detects live Node backend vs GitHub Pages static mode)
   async function loadBootstrap(silent = false) {
     if (state.mode === 'auto') {
       try {
@@ -687,7 +651,7 @@ Script.complete();`;
         const ct = res.headers.get('content-type') || '';
         if (res.ok && ct.includes('application/json')) {
           const data = await res.json();
-          if (data && data.user) {
+          if (data && 'user' in data) {
             state.mode = 'server';
             applyBootstrapData(data, !silent);
             return;
@@ -705,15 +669,19 @@ Script.complete();`;
         if (!silent) showHud(err.message || '连接服务失败', 'var(--red)');
       }
     } else {
-      const data = buildLocalBootstrap(state.userId);
-      applyBootstrapData(data, !silent);
+      applyBootstrapData(buildLocalBootstrap(state.userId), !silent);
     }
   }
 
   function applyBootstrapData(data, animate) {
     state.data = data;
-    state.userId = data.user.id;
-    localStorage.setItem('shixu_user_id', state.userId);
+    if (data.user) {
+      state.userId = data.user.id;
+      localStorage.setItem('shixu_raw_user_id', state.userId);
+    } else {
+      state.userId = '';
+      localStorage.removeItem('shixu_raw_user_id');
+    }
     if (!state.activeGroupId || !data.groups.some((g) => g.id === state.activeGroupId)) {
       state.activeGroupId = data.groups[0] ? data.groups[0].id : null;
     }
@@ -735,17 +703,23 @@ Script.complete();`;
   }
 
   function syncHeader() {
-    if (!state.data) return;
-    const u = state.data.user;
-    navAvatar.textContent = u.avatar;
-    navAvatar.style.background = u.color || 'var(--accent)';
-    navUsername.textContent = u.name;
-    compactTitle.textContent = TAB_TITLES[state.activeTab] || '时序';
-    fabAdd.classList.toggle('is-hidden', !(state.activeTab === 'today' || state.activeTab === 'exams'));
+    const u = state.data && state.data.user;
+    if (u) {
+      navAvatar.textContent = u.avatar;
+      navAvatar.style.background = u.color || 'var(--accent)';
+      navUsername.textContent = u.name;
+    } else {
+      navAvatar.textContent = '我';
+      navAvatar.style.background = 'var(--accent)';
+      navUsername.textContent = '开始使用';
+    }
+    compactTitle.textContent = u ? (TAB_TITLES[state.activeTab] || '时序') : '时序';
+    const showFab = Boolean(u) && (state.activeTab === 'today' || state.activeTab === 'exams');
+    fabAdd.classList.toggle('is-hidden', !showFab);
   }
 
   // =========================================================================
-  // Views
+  // Views (Pure Clean Initial Onboarding + Raw Empty States)
   // =========================================================================
 
   function renderView(animate = true) {
@@ -756,6 +730,40 @@ Script.complete();`;
       viewContainer.style.animation = 'none';
       void viewContainer.offsetWidth;
       viewContainer.style.animation = '';
+    }
+
+    // If completely raw (no user created yet), show Apple Welcome Onboarding
+    if (!state.data.user) {
+      viewContainer.innerHTML = buildWelcomeOnboardingView();
+      const form = document.getElementById('form-welcome-start');
+      if (form) {
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const name = document.getElementById('input-welcome-name').value.trim();
+          if (!name) return;
+          try {
+            const payload = { name };
+            if (state.pendingInvite) {
+              payload.joinCode = state.pendingInvite.code;
+              payload.sharedGroup = state.pendingInvite.sharedGroup;
+            }
+            const res = await api('/api/users', { method: 'POST', body: JSON.stringify(payload) });
+            state.userId = res.user.id;
+            localStorage.setItem('shixu_raw_user_id', state.userId);
+            const joined = Boolean(state.pendingInvite);
+            state.pendingInvite = null;
+            if (joined) {
+              state.activeTab = 'groups';
+              syncTabButtons();
+            }
+            await loadBootstrap(false);
+            showHud(`欢迎，${res.user.name}`);
+          } catch (err) {
+            showHud(err.message, 'var(--red)');
+          }
+        });
+      }
+      return;
     }
 
     if (state.activeTab === 'today') {
@@ -773,6 +781,52 @@ Script.complete();`;
         if (codeEl) codeEl.textContent = state.scriptableCode;
       });
     }
+  }
+
+  function buildWelcomeOnboardingView() {
+    const invite = state.pendingInvite;
+    return `
+      <div style="padding:26px 4px 12px;text-align:center;">
+        <img src="./icons/apple-touch-icon.png" alt="时序图标" style="width:76px;height:76px;border-radius:18px;box-shadow:0 12px 28px rgba(0,113,227,0.26);margin-bottom:18px;" />
+        <h1 class="page-title" style="font-size:30px;">欢迎使用「时序」</h1>
+        <p style="font-size:14px;line-height:1.6;color:var(--text-secondary);margin:10px auto 24px;max-width:300px;">
+          制定每日学习任务、追踪考试倒计时、组建学习小组，并将进度直接呈现于 iPhone 桌面与锁屏。
+        </p>
+
+        ${invite && invite.sharedGroup ? `
+          <div class="card card-padded" style="text-align:left;margin-bottom:16px;">
+            <div style="font-size:12px;font-weight:600;color:var(--accent);">收到学习小组邀请</div>
+            <div style="font-size:16px;font-weight:700;margin-top:4px;">${esc(invite.sharedGroup.name)}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">共同目标：${esc(invite.sharedGroup.examName)} · ${esc(invite.sharedGroup.targetDate)}</div>
+          </div>
+        ` : ''}
+
+        <div class="card card-padded" style="text-align:left;">
+          <form id="form-welcome-start">
+            <div class="field">
+              <label class="field-label" for="input-welcome-name">输入你的昵称，立即开始</label>
+              <input id="input-welcome-name" class="input" type="text" required maxlength="16" placeholder="例如：小陈 / Alex" autofocus />
+            </div>
+            <button type="submit" class="btn-primary btn-block">${invite ? '创建昵称并加入小组' : '进入我的学习台'}</button>
+          </form>
+        </div>
+
+        <div style="margin-top:20px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center;">
+          <div class="card" style="padding:12px 8px;">
+            <div style="font-size:13px;font-weight:600;">每日清单</div>
+            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">自定义与重复</div>
+          </div>
+          <div class="card" style="padding:12px 8px;">
+            <div style="font-size:13px;font-weight:600;">目标倒计时</div>
+            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">桌面锁屏直达</div>
+          </div>
+          <div class="card" style="padding:12px 8px;">
+            <div style="font-size:13px;font-weight:600;">学习小组</div>
+            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">多人打卡互督</div>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   function buildTodayView() {
@@ -816,10 +870,12 @@ Script.complete();`;
           </div>
         </section>
       ` : `
-        <section class="card card-padded" style="text-align:center;">
-          <div style="font-size:15px;font-weight:600;">尚未设定考试倒计时</div>
-          <p style="font-size:13px;color:var(--text-secondary);margin:6px 0 14px;">添加一个考试或目标日期，每天醒目提醒进度。</p>
-          <button class="btn-primary btn-sm" data-action="open-add-exam">设定目标倒计时</button>
+        <section class="card card-padded" style="text-align:center;padding:24px 18px;">
+          <div style="font-size:16px;font-weight:700;letter-spacing:-0.015em;">尚未设定考试或目标倒计时</div>
+          <p style="font-size:13px;color:var(--text-secondary);margin:6px 0 16px;line-height:1.5;">
+            设定一个关键考试日期或个人目标，首页与 iPhone 锁屏将自动为您精准倒数。
+          </p>
+          <button class="btn-primary btn-sm" data-action="open-add-exam">+ 设定第一个目标倒计时</button>
         </section>
       `}
 
@@ -828,7 +884,7 @@ Script.complete();`;
           <div>
             <div class="summary-label">今日任务</div>
             <div class="summary-value tabular">${doneCount} / ${totalCount}</div>
-            <div class="summary-sub">连续打卡 ${user.streak} 天</div>
+            <div class="summary-sub">已坚持 ${user.streak} 天</div>
           </div>
           <div class="ring-box">
             ${ringSVG(pct, 48, 5, 'var(--accent)')}
@@ -840,7 +896,7 @@ Script.complete();`;
           <div>
             <div class="summary-label">今日专注</div>
             <div class="summary-value tabular">${user.focusMinutesToday || 0}<span style="font-size:13px;font-weight:500;margin-left:2px;">分</span></div>
-            <div class="summary-sub" style="color:var(--accent);font-weight:500;">点击开启计时 ›</div>
+            <div class="summary-sub" style="color:var(--accent);font-weight:500;">开启专注计时 ›</div>
           </div>
           <div class="ring-box">
             ${ringSVG(Math.min(100, Math.round(((user.focusMinutesToday || 0) / 180) * 100)), 48, 5, 'var(--green)')}
@@ -878,8 +934,9 @@ Script.complete();`;
           </div>
         `).join('') : `
           <div class="empty-box">
-            <div>今天还没有安排学习任务</div>
-            <button class="btn-primary btn-sm" style="margin-top:12px;" data-action="open-add-task">制定第一项任务</button>
+            <div style="font-size:15px;font-weight:600;color:var(--text-primary);">今天还没有安排学习任务</div>
+            <p style="font-size:12px;margin:6px 0 14px;">点击下方按钮或右下角 + 号，创建你的第一项今日学习计划。</p>
+            <button class="btn-primary btn-sm" data-action="open-add-task">+ 制定第一项任务</button>
           </div>
         `}
       </section>
@@ -893,7 +950,7 @@ Script.complete();`;
     return `
       <div class="page-header">
         <div>
-          <div class="page-date">多人共学 · 实时同步</div>
+          <div class="page-date">多人共学 · 互相监督</div>
           <h1 class="page-title">学习小组</h1>
         </div>
         <div style="display:flex;gap:6px;">
@@ -961,16 +1018,15 @@ Script.complete();`;
                   <span class="member-avatar-inner" style="background:${m.color || 'var(--accent)'}">${esc(m.avatar)}</span>
                 </div>
                 <div class="member-name">${m.id === user.id ? '我' : esc(m.name)}</div>
-                <div class="member-ratio tabular">${m.done}/${m.total} · ${m.streak}天</div>
+                <div class="member-ratio tabular">${m.done}/${m.total}</div>
               </button>
             `).join('')}
           </div>
-          <div class="member-hint">未完成时点击头像可「拍一拍催学」，已完成可「点赞鼓励」</div>
+          <div class="member-hint">点击左上角头像可新建其他成员账号输入邀请码加入，测试多人互相催学</div>
         </section>
 
         <div class="section-header">
-          <h2 class="section-title">小组实时打卡动态</h2>
-          <span style="font-size:12px;color:var(--green);font-weight:600;">实时在线</span>
+          <h2 class="section-title">小组打卡动态</h2>
         </div>
 
         <section class="feed-list">
@@ -993,16 +1049,18 @@ Script.complete();`;
               </article>
             `;
           }).join('') : `
-            <div class="card empty-box">还没有打卡动态，去「今日」勾选一项任务试试吧。</div>
+            <div class="card empty-box">还没有打卡记录，去「今日」完成一项任务后会实时出现在这里。</div>
           `}
         </section>
       ` : `
-        <section class="card empty-box">
-          <div style="font-size:15px;font-weight:600;color:var(--text-primary);">你还没有加入任何学习小组</div>
-          <p style="margin:8px 0 16px;">创建一个小组生成邀请链接发给研友/同学，或输入邀请码立即加入。</p>
+        <section class="card empty-box" style="padding:36px 20px;">
+          <div style="font-size:16px;font-weight:700;color:var(--text-primary);">尚未创建或加入学习小组</div>
+          <p style="font-size:13px;line-height:1.55;margin:8px 0 18px;">
+            创建一个学习小组设定共同考试倒计时，生成专属邀请码与链接邀请同伴一起每日打卡监督。
+          </p>
           <div style="display:flex;justify-content:center;gap:10px;">
             <button class="btn-secondary" data-action="open-join-group">输入邀请码</button>
-            <button class="btn-primary" data-action="open-create-group">创建学习小组</button>
+            <button class="btn-primary" data-action="open-create-group">创建第一个小组</button>
           </div>
         </section>
       `}
@@ -1040,23 +1098,27 @@ Script.complete();`;
               <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">剩余天</div>
               <div class="exam-actions-inline">
                 ${!e.pinned ? `<button style="color:var(--accent);font-weight:600;" data-action="pin-exam" data-id="${e.id}">置顶</button>` : ''}
-                ${exams.length > 1 ? `<button style="color:var(--text-tertiary);" data-action="delete-exam" data-id="${e.id}">删除</button>` : ''}
+                <button style="color:var(--text-tertiary);" data-action="delete-exam" data-id="${e.id}">删除</button>
               </div>
             </div>
           </article>
         `).join('') : `
-          <div class="card empty-box">暂无目标倒计时，点击右上角添加一个考试日期。</div>
+          <div class="card empty-box">
+            <div style="font-size:15px;font-weight:600;color:var(--text-primary);">还没有设定目标倒计时</div>
+            <p style="font-size:12px;margin:6px 0 14px;">点击上方「+ 新目标」自由填写考试与日期，或从下方快捷模板添加。</p>
+            <button class="btn-primary btn-sm" data-action="open-add-exam">+ 自定义目标日期</button>
+          </div>
         `}
       </section>
 
       <div class="section-header">
-        <h2 class="section-title">一键添加热门考试预设</h2>
+        <h2 class="section-title">快捷添加常见考试模板</h2>
       </div>
       <section class="card card-padded">
         <div class="chip-row">
           ${EXAM_PRESETS.map((p, idx) => `
             <button class="choice-chip" data-action="quick-preset-exam" data-idx="${idx}">
-              + ${esc(p.name)} (${p.days}天)
+              + ${esc(p.name)}
             </button>
           `).join('')}
         </div>
@@ -1084,7 +1146,7 @@ Script.complete();`;
           <div>
             <div style="font-size:16px;font-weight:700;letter-spacing:-0.015em;">① 添加至 iPhone 主屏幕</div>
             <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">
-              ${isStandalone ? '已处于独立全屏 App 模式，体验最佳' : '免下载 App，3 秒生成原生质感全屏桌面图标'}
+              ${isStandalone ? '已处于独立全屏 App 模式' : '免下载 App，3 秒生成原生质感全屏桌面图标'}
             </div>
           </div>
           <img src="./icons/apple-touch-icon.png" alt="时序图标" style="width:44px;height:44px;border-radius:11px;box-shadow:0 3px 10px rgba(0,113,227,0.22);" />
@@ -1109,12 +1171,12 @@ Script.complete();`;
       </section>
 
       <div class="section-header">
-        <h2 class="section-title">② iPhone 锁屏倒计时壁纸（免装 App 首选）</h2>
+        <h2 class="section-title">② iPhone 锁屏倒计时壁纸（实时同步你的数据）</h2>
       </div>
       <section class="card card-padded">
-        <div style="font-size:14px;font-weight:600;">自动避开锁屏时钟，亮屏即见考试倒计时与今日任务</div>
+        <div style="font-size:14px;font-weight:600;">自动避开锁屏时钟，亮屏即见你的考试倒计时与今日任务</div>
         <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;line-height:1.5;">
-          可直接保存 1170×2532 高清 PNG 设为 iPhone 锁屏壁纸，每次更新任务或切换暗夜模式都可随时重新导出。
+          添加目标与任务后，下方壁纸会自动更新；点击即可保存 1170×2532 高清 PNG 设为 iPhone 锁屏壁纸。
         </div>
 
         <div class="wallpaper-preview-frame">
@@ -1131,9 +1193,9 @@ Script.complete();`;
         <h2 class="section-title">③ 桌面实时小组件（Scriptable 进阶版）</h2>
       </div>
       <section class="card card-padded">
-        <div style="font-size:14px;font-weight:600;">在 iPhone 主屏幕展示真实 4×2 倒计时与任务卡片</div>
+        <div style="font-size:14px;font-weight:600;">在 iPhone 主屏幕展示 4×2 倒计时与任务卡片</div>
         <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;line-height:1.5;">
-          在 App Store 免费下载 <strong>Scriptable</strong>，新建脚本粘贴下方专属代码，长按桌面添加 Scriptable 中号小组件即可在主屏直接显示倒计时，点一下直达网页打卡。
+          在 App Store 免费下载 <strong>Scriptable</strong>，新建脚本粘贴下方专属代码，长按桌面添加 Scriptable 中号小组件即可在主屏直接显示倒计时。
         </div>
         <pre id="scriptable-code-preview" class="code-preview">正在生成你的专属小组件代码…</pre>
         <button class="btn-primary btn-block" style="margin-top:12px;" data-action="copy-scriptable">一键复制我的小组件脚本</button>
@@ -1154,7 +1216,7 @@ Script.complete();`;
       <form id="form-add-task">
         <div class="field">
           <label class="field-label" for="input-task-title">任务内容</label>
-          <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="例如：背诵 50 个考研高频词并复盘" autofocus />
+          <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="例如：背诵 50 个核心词汇" autofocus />
         </div>
         <div class="field">
           <label class="field-label">学科 / 分类</label>
@@ -1172,7 +1234,7 @@ Script.complete();`;
           <div class="switch-row">
             <div>
               <div style="font-size:14px;font-weight:600;">每日自动重复</div>
-              <div style="font-size:12px;color:var(--text-secondary);">次日自动重置为待办，适合背词/刷题习惯</div>
+              <div style="font-size:12px;color:var(--text-secondary);">次日自动重置为待办，适合长期习惯</div>
             </div>
             <button type="button" id="switch-repeat" class="ios-switch is-on" role="switch" aria-checked="true"></button>
           </div>
@@ -1226,7 +1288,7 @@ Script.complete();`;
       <form id="form-add-exam">
         <div class="field">
           <label class="field-label" for="input-exam-name">考试或目标名称</label>
-          <input id="input-exam-name" class="input" type="text" required maxlength="30" placeholder="例如：2027 全国考研初试" />
+          <input id="input-exam-name" class="input" type="text" required maxlength="30" placeholder="例如：2027 全国考研初试" autofocus />
         </div>
         <div class="field">
           <label class="field-label" for="input-exam-date">目标日期</label>
@@ -1234,7 +1296,7 @@ Script.complete();`;
         </div>
         <div class="field">
           <label class="field-label" for="input-exam-tag">阶段标签</label>
-          <input id="input-exam-tag" class="input" type="text" maxlength="12" value="核心冲刺" />
+          <input id="input-exam-tag" class="input" type="text" maxlength="12" value="核心目标" />
         </div>
         <button type="submit" class="btn-primary btn-block">保存并置顶显示</button>
       </form>
@@ -1269,19 +1331,19 @@ Script.complete();`;
       <form id="form-create-group">
         <div class="field">
           <label class="field-label" for="input-group-name">小组名称</label>
-          <input id="input-group-name" class="input" type="text" required maxlength="24" placeholder="例如：法考每日打卡搭子组" />
+          <input id="input-group-name" class="input" type="text" required maxlength="24" placeholder="例如：考研每日打卡小组" autofocus />
         </div>
         <div class="field">
           <label class="field-label" for="input-group-exam">共同备考目标</label>
-          <input id="input-group-exam" class="input" type="text" required maxlength="24" placeholder="例如：2027 法考客观题" />
+          <input id="input-group-exam" class="input" type="text" required maxlength="24" placeholder="例如：2027 考研初试" />
         </div>
         <div class="field">
           <label class="field-label" for="input-group-date">共同目标日期</label>
           <input id="input-group-date" class="input tabular" type="date" required value="${addDaysStr(80)}" />
         </div>
         <div class="field">
-          <label class="field-label" for="input-group-notice">小组公约 / 公告</label>
-          <input id="input-group-notice" class="input" type="text" maxlength="60" value="每晚 22:30 前完成今日清单打卡，互相监督。" />
+          <label class="field-label" for="input-group-notice">小组公告</label>
+          <input id="input-group-notice" class="input" type="text" maxlength="60" value="每天按计划完成打卡，互相监督。" />
         </div>
         <button type="submit" class="btn-primary btn-block">立即创建并生成邀请码</button>
       </form>
@@ -1318,16 +1380,15 @@ Script.complete();`;
       <form id="form-join-group">
         ${sharedGroup ? `
           <div class="card card-padded" style="margin-bottom:14px;background:var(--bg-surface);">
-            <div style="font-size:12px;color:var(--accent);font-weight:600;">收到微信学习小组邀请</div>
+            <div style="font-size:12px;color:var(--accent);font-weight:600;">收到学习小组邀请</div>
             <div style="font-size:16px;font-weight:700;margin-top:4px;">${esc(sharedGroup.name)}</div>
             <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">共同目标：${esc(sharedGroup.examName)} · ${esc(sharedGroup.targetDate)}</div>
           </div>
         ` : ''}
         <div class="field">
           <label class="field-label" for="input-join-code">输入 6 位小组邀请码</label>
-          <input id="input-join-code" class="input tabular" style="text-transform:uppercase;letter-spacing:0.12em;font-weight:700;" type="text" required maxlength="8" placeholder="例如 KY2027" value="${esc(prefillCode)}" />
+          <input id="input-join-code" class="input tabular" style="text-transform:uppercase;letter-spacing:0.12em;font-weight:700;" type="text" required maxlength="8" placeholder="输入 6 位邀请码" value="${esc(prefillCode)}" autofocus />
         </div>
-        <p style="font-size:12px;color:var(--text-secondary);margin:-4px 0 16px;">演示小组邀请码：<strong style="color:var(--text-primary);">KY2027</strong></p>
         <button type="submit" class="btn-primary btn-block">立即加入小组</button>
       </form>
     `);
@@ -1354,15 +1415,15 @@ Script.complete();`;
   }
 
   function openAccountSheet() {
-    if (!state.data) return;
+    if (!state.data || !state.data.user) return;
     const { users, user } = state.data;
     openSheet(`
       <div class="sheet-header">
-        <h2 class="sheet-title">学习账号 · 多人体验切换</h2>
+        <h2 class="sheet-title">账号管理与重置</h2>
         <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
       </div>
       <p style="font-size:12px;color:var(--text-secondary);margin:0 0 14px;line-height:1.5;">
-        你可以创建自己的专属账号，或在已有成员之间快速切换，直观体验多人小组打卡与实时同步效果。
+        可新建多个成员账号并切换，亲自测试“创建小组 → 输入邀请码加入 → 多人互相打卡与催学”完整流程。
       </p>
       <div>
         ${users.map((u) => `
@@ -1371,7 +1432,7 @@ Script.complete();`;
               <span class="avatar-dot" style="width:32px;height:32px;font-size:13px;background:${u.color}">${esc(u.avatar)}</span>
               <div style="text-align:left;">
                 <div style="font-size:14px;font-weight:600;">${esc(u.name)}</div>
-                <div style="font-size:11px;color:var(--text-secondary);">连续打卡 ${u.streak} 天</div>
+                <div style="font-size:11px;color:var(--text-secondary);">已坚持 ${u.streak} 天</div>
               </div>
             </div>
             ${u.id === user.id ? '<span class="account-check">当前账号</span>' : '<span style="font-size:12px;color:var(--text-tertiary);">切换</span>'}
@@ -1382,13 +1443,19 @@ Script.complete();`;
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border-separator);">
         <form id="form-new-user">
           <div class="field">
-            <label class="field-label" for="input-new-username">创建全新学习账号（自动加入默认演示小组）</label>
+            <label class="field-label" for="input-new-username">新增一个空白成员账号</label>
             <div style="display:flex;gap:8px;">
-              <input id="input-new-username" class="input" type="text" required maxlength="16" placeholder="输入你的昵称，如：李明" />
-              <button type="submit" class="btn-primary" style="flex-shrink:0;">创建</button>
+              <input id="input-new-username" class="input" type="text" required maxlength="16" placeholder="输入新成员昵称" />
+              <button type="submit" class="btn-primary" style="flex-shrink:0;">新建</button>
             </div>
           </div>
         </form>
+      </div>
+
+      <div style="margin-top:12px;padding-top:14px;border-top:1px solid var(--border-separator);">
+        <button id="btn-reset-all" class="btn-secondary btn-block" style="color:var(--red);">
+          清空全部数据 · 恢复全新初始状态
+        </button>
       </div>
     `);
 
@@ -1396,7 +1463,7 @@ Script.complete();`;
       btn.addEventListener('click', async () => {
         state.userId = btn.dataset.switchUser;
         state.scriptableCode = '';
-        localStorage.setItem('shixu_user_id', state.userId);
+        localStorage.setItem('shixu_raw_user_id', state.userId);
         closeSheet();
         await loadBootstrap(false);
         showHud(`已切换为 ${state.data.user.name}`);
@@ -1409,15 +1476,28 @@ Script.complete();`;
       if (!name) return;
       closeSheet();
       try {
-        const res = await api('/api/users', {
-          method: 'POST',
-          body: JSON.stringify({ name, joinCode: 'KY2027' })
-        });
+        const res = await api('/api/users', { method: 'POST', body: JSON.stringify({ name }) });
         state.userId = res.user.id;
         state.scriptableCode = '';
-        localStorage.setItem('shixu_user_id', state.userId);
+        localStorage.setItem('shixu_raw_user_id', state.userId);
         await loadBootstrap(false);
-        showHud(`欢迎加入，${res.user.name}`);
+        showHud(`已创建并切换为 ${res.user.name}`);
+      } catch (err) {
+        showHud(err.message, 'var(--red)');
+      }
+    });
+
+    document.getElementById('btn-reset-all').addEventListener('click', async () => {
+      closeSheet();
+      try {
+        await api('/api/reset', { method: 'POST', body: JSON.stringify({}) });
+        state.userId = '';
+        state.activeGroupId = null;
+        state.activeTab = 'today';
+        syncTabButtons();
+        localStorage.removeItem('shixu_raw_user_id');
+        await loadBootstrap(false);
+        showHud('已恢复为全新初始空白状态');
       } catch (err) {
         showHud(err.message, 'var(--red)');
       }
@@ -1425,6 +1505,7 @@ Script.complete();`;
   }
 
   function openFocusSheet() {
+    if (!state.data || !state.data.user) return;
     const f = state.focus;
     const totalSec = f.presetMin * 60;
     const pct = Math.round(((totalSec - f.remainingSec) / totalSec) * 100);
@@ -1449,7 +1530,7 @@ Script.complete();`;
         </div>
         <div class="btn-row" style="width:100%;">
           <button id="focus-toggle-btn" class="btn-primary">${f.running ? '暂停专注' : '开始专注'}</button>
-          <button id="focus-finish-btn" class="btn-secondary">提前结算打卡</button>
+          <button id="focus-finish-btn" class="btn-secondary">结算记录时长</button>
         </div>
       </div>
     `);
@@ -1481,7 +1562,7 @@ Script.complete();`;
           body: JSON.stringify({ userId: state.userId, minutes: elapsedMin, label: f.label })
         });
         await loadBootstrap(true);
-        showHud(`已记录 ${elapsedMin} 分钟专注并同步小组`);
+        showHud(`已记录 ${elapsedMin} 分钟专注时长`);
       } catch (err) {
         showHud(err.message, 'var(--red)');
       }
@@ -1505,7 +1586,7 @@ Script.complete();`;
           body: JSON.stringify({ userId: state.userId, minutes: mins, label: state.focus.label })
         }).catch(() => {});
         await loadBootstrap(true);
-        showHud(`专注 ${mins} 分钟完成，已同步到小组`);
+        showHud(`专注 ${mins} 分钟完成`);
       }
     }, 1000);
   }
@@ -1519,17 +1600,17 @@ Script.complete();`;
   }
 
   // =========================================================================
-  // Crisp 1170x2532 iPhone Lock Screen PNG Generator (Works 100% Client-Side)
+  // 1170x2532 iPhone Lock Screen PNG Generator (Real-time user data)
   // =========================================================================
 
   function renderLockscreenCanvasDataUrl() {
-    if (!state.data) return '';
+    if (!state.data || !state.data.user) return '';
     const canvas = document.getElementById('wallpaper-canvas');
     const ctx = canvas.getContext('2d');
     const W = 1170;
     const H = 2532;
     const isDark = state.theme === 'dark';
-    const pinned = state.data.exams[0] || { name: '设定你的目标', tag: '核心目标', daysLeft: 0, progress: 0, targetDate: '' };
+    const pinned = state.data.exams[0] || { name: '尚未设定目标倒计时', tag: '时序', daysLeft: 0, progress: 0, targetDate: todayKey() };
     const tasks = state.data.tasks.slice(0, 3);
     const done = state.data.tasks.filter((t) => t.done).length;
     const total = state.data.tasks.length;
@@ -1594,34 +1675,42 @@ Script.complete();`;
     roundRect(156, 1392, 858, 12, 6);
     ctx.fillStyle = sep;
     ctx.fill();
-    roundRect(156, 1392, Math.max(40, Math.round(858 * (pinned.progress / 100))), 12, 6);
-    ctx.fillStyle = accent;
-    ctx.fill();
+    if (pinned.progress > 0) {
+      roundRect(156, 1392, Math.max(40, Math.round(858 * (pinned.progress / 100))), 12, 6);
+      ctx.fillStyle = accent;
+      ctx.fill();
+    }
 
-    tasks.forEach((t, idx) => {
-      const y = 1500 + idx * 104;
-      ctx.beginPath();
-      ctx.arc(176, y - 12, 16, 0, Math.PI * 2);
-      if (t.done) {
-        ctx.fillStyle = accent;
-        ctx.fill();
-      } else {
-        ctx.strokeStyle = muted;
-        ctx.lineWidth = 3.5;
-        ctx.stroke();
-      }
-      ctx.fillStyle = t.done ? muted : fg;
-      ctx.font = `500 35px ${fontFamily}`;
-      const label = t.title.length > 18 ? `${t.title.slice(0, 18)}…` : t.title;
-      ctx.fillText(label, 218, y);
-    });
+    if (tasks.length) {
+      tasks.forEach((t, idx) => {
+        const y = 1500 + idx * 104;
+        ctx.beginPath();
+        ctx.arc(176, y - 12, 16, 0, Math.PI * 2);
+        if (t.done) {
+          ctx.fillStyle = accent;
+          ctx.fill();
+        } else {
+          ctx.strokeStyle = muted;
+          ctx.lineWidth = 3.5;
+          ctx.stroke();
+        }
+        ctx.fillStyle = t.done ? muted : fg;
+        ctx.font = `500 35px ${fontFamily}`;
+        const label = t.title.length > 18 ? `${t.title.slice(0, 18)}…` : t.title;
+        ctx.fillText(label, 218, y);
+      });
+    } else {
+      ctx.fillStyle = muted;
+      ctx.font = `500 34px ${fontFamily}`;
+      ctx.fillText('前往「今日」添加你的学习任务清单', 156, 1550);
+    }
 
     ctx.fillStyle = sep;
     ctx.fillRect(156, 1812, 858, 2);
 
     ctx.fillStyle = muted;
     ctx.font = `500 31px ${fontFamily}`;
-    ctx.fillText(grp ? `${grp.name} · 今日 ${grp.teamPct}%` : `连续坚持 ${state.data.user.streak} 天`, 156, 1878);
+    ctx.fillText(grp ? `${grp.name} · 今日 ${grp.teamPct}%` : `${state.data.user.name} · 时序`, 156, 1878);
 
     ctx.fillStyle = accent;
     ctx.font = `600 31px ${fontFamily}`;
@@ -1655,6 +1744,10 @@ Script.complete();`;
 
   document.querySelectorAll('.tab-item').forEach((btn) => {
     btn.addEventListener('click', () => {
+      if (!state.data || !state.data.user) {
+        showHud('请先输入昵称开始使用', 'var(--accent)');
+        return;
+      }
       const next = btn.dataset.tab;
       if (next === state.activeTab) {
         mainScroll.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1676,10 +1769,11 @@ Script.complete();`;
   document.getElementById('nav-focus-btn').addEventListener('click', openFocusSheet);
   document.getElementById('nav-theme-btn').addEventListener('click', () => {
     applyTheme(state.theme === 'dark' ? 'light' : 'dark');
-    if (state.activeTab === 'desktop') renderView(false);
+    if (state.activeTab === 'desktop' && state.data && state.data.user) renderView(false);
   });
 
   fabAdd.addEventListener('click', () => {
+    if (!state.data || !state.data.user) return;
     if (state.activeTab === 'exams') openAddExamSheet();
     else openAddTaskSheet();
   });
@@ -1730,7 +1824,7 @@ Script.complete();`;
           body: JSON.stringify({ done: task.done })
         });
         await loadBootstrap(true);
-        if (task.done) showHud('打卡成功，已同步至学习小组');
+        if (task.done) showHud('已完成打卡');
       } catch (err) {
         showHud(err.message, 'var(--red)');
         await loadBootstrap(true);
@@ -1822,7 +1916,7 @@ Script.complete();`;
           body: JSON.stringify({ fromUserId: state.userId, toUserId: targetUserId, kind })
         });
         await loadBootstrap(true);
-        showHud(kind === 'cheer' ? `已鼓励 ${btn.dataset.name}` : `已拍一拍提醒 ${btn.dataset.name} 去打卡`, 'var(--accent)');
+        showHud(kind === 'cheer' ? `已鼓励 ${btn.dataset.name}` : `已拍一拍提醒 ${btn.dataset.name}`, 'var(--accent)');
       } catch (err) {
         showHud(err.message, 'var(--red)');
       }
@@ -1858,7 +1952,6 @@ Script.complete();`;
     }
   });
 
-  // Real-time Sync (SSE in Server Mode, BroadcastChannel in Static Mode)
   function setupRealtime() {
     if (state.mode === 'server' && window.EventSource) {
       const es = new EventSource('./api/events');
@@ -1895,14 +1988,14 @@ Script.complete();`;
     }
   }
 
-  function checkInviteLink() {
+  function parseInviteLink() {
     const params = new URLSearchParams(window.location.search);
     const joinCode = params.get('join');
     const sharedParam = params.get('g');
     if (joinCode) {
       const sharedGroup = sharedParam ? decodeShareGroup(sharedParam) : null;
       window.history.replaceState({}, '', window.location.pathname);
-      setTimeout(() => openJoinGroupSheet(joinCode.toUpperCase(), sharedGroup), 450);
+      state.pendingInvite = { code: joinCode.toUpperCase(), sharedGroup };
     }
   }
 
@@ -1914,8 +2007,13 @@ Script.complete();`;
 
   applyTheme(state.theme);
   checkWeChatBrowser();
+  parseInviteLink();
   loadBootstrap(false).then(() => {
     setupRealtime();
-    checkInviteLink();
+    if (state.data && state.data.user && state.pendingInvite) {
+      const inv = state.pendingInvite;
+      state.pendingInvite = null;
+      setTimeout(() => openJoinGroupSheet(inv.code, inv.sharedGroup), 350);
+    }
   });
 })();
