@@ -179,17 +179,23 @@ button svg {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  max-width: calc(100vw - 36px);
-  padding: 10px 18px;
+  max-width: calc(100vw - 28px);
+  padding: 9px 15px;
   border-radius: var(--radius-pill);
   background: #1D1D1F;
   color: #F5F5F7;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
   letter-spacing: -0.01em;
+  white-space: nowrap;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
   pointer-events: none;
   transition: transform 420ms var(--ease-spring), opacity 240ms ease;
+}
+
+#hud-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 html[data-theme="dark"] .hud-pill {
@@ -333,9 +339,13 @@ html[data-theme="dark"] .hud-pill {
   padding-bottom: calc(96px + var(--safe-bottom));
 }
 
+html.ios-kb-open .main-scroll {
+  padding-bottom: calc(var(--kb-inset, 0px) + 140px);
+}
+
 .view-container {
   padding: 2px max(18px, var(--safe-right)) 24px max(18px, var(--safe-left));
-  animation: appleViewEnter 340ms var(--ease-apple) both;
+  opacity: 1;
 }
 
 @keyframes appleViewEnter {
@@ -1472,14 +1482,20 @@ textarea.input {
   transform: none;
 }
 
-/* Only constrain sheet height while iOS soft keyboard is genuinely open */
+/* Lift sheet cleanly into the exact visible band above the iOS keyboard */
+html.ios-kb-open .sheet-backdrop {
+  top: var(--kb-top, 0px);
+  height: var(--kb-height, 100%);
+  bottom: auto;
+}
+
 html.ios-kb-open .sheet-panel {
-  max-height: calc(var(--kb-height, 100%) - 14px);
-  padding-bottom: 12px;
+  max-height: calc(100% - 8px);
+  padding-bottom: 8px;
 }
 
 .sheet-grabber-wrap {
-  padding: 10px 0 6px;
+  padding: 10px 0 4px;
   display: flex;
   justify-content: center;
   flex-shrink: 0;
@@ -1493,23 +1509,46 @@ html.ios-kb-open .sheet-panel {
 }
 
 .sheet-content {
-  padding: 6px max(20px, var(--safe-right)) 20px max(20px, var(--safe-left));
+  padding: 0 max(20px, var(--safe-right)) 20px max(20px, var(--safe-left));
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
 }
 
 .sheet-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 16px;
+  margin: 0 -20px 14px;
+  padding: 6px 20px 12px;
+  background: var(--bg-sheet);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.sheet-sticky-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  margin: 12px -20px -20px;
+  padding: 10px 20px 16px;
+  background: var(--bg-sheet);
+  border-top: 1px solid var(--border-hairline);
+}
+
+html.ios-kb-open .sheet-sticky-footer {
+  position: static;
+  margin: 12px 0 0;
+  padding: 10px 0 4px;
+  border-top: none;
 }
 
 .sheet-title {
   margin: 0;
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
@@ -2716,6 +2755,26 @@ input[type="date"].input {
    - iPad Portrait / Split View / Landscape (>= 600px)
    ========================================================================== */
 
+@media (max-width: 414px) {
+  .summary-sub {
+    white-space: nowrap;
+    font-size: 11px;
+  }
+  .task-filter-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .task-filter-bar .seg-btn {
+    padding: 5px 9px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .review-notebook-btn {
+    padding: 5px 10px;
+    font-size: 11px;
+  }
+}
+
 @media (max-width: 390px) {
   .top-nav-inner {
     padding: 0 max(14px, var(--safe-right)) 0 max(14px, var(--safe-left));
@@ -2741,23 +2800,19 @@ input[type="date"].input {
   .summary-value {
     font-size: 22px;
   }
-  .task-filter-bar {
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .task-filter-bar .seg-btn {
-    padding: 5px 9px;
-    font-size: 11px;
-  }
-  .review-notebook-btn {
-    padding: 5px 10px;
-    font-size: 11px;
-  }
   .timeline-rail {
     gap: 4px;
   }
   .sheet-content {
-    padding: 6px max(16px, var(--safe-right)) 20px max(16px, var(--safe-left));
+    padding: 0 max(16px, var(--safe-right)) 20px max(16px, var(--safe-left));
+  }
+  .sheet-header {
+    margin: 0 -16px 12px;
+    padding: 6px 16px 10px;
+  }
+  .sheet-sticky-footer {
+    margin: 12px -16px -20px;
+    padding: 10px 16px 16px;
   }
 }
 

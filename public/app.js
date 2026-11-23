@@ -1592,12 +1592,39 @@
   function clearKeyboardViewportState() {
     document.documentElement.classList.remove('ios-kb-open');
     document.documentElement.style.removeProperty('--kb-height');
+    document.documentElement.style.removeProperty('--kb-top');
+    document.documentElement.style.removeProperty('--kb-inset');
   }
 
   function restoreIOSViewport() {
     if (document.documentElement.scrollTop !== 0) document.documentElement.scrollTop = 0;
     if (document.body.scrollTop !== 0) document.body.scrollTop = 0;
     if (window.scrollY !== 0 || window.scrollX !== 0) window.scrollTo(0, 0);
+  }
+
+  function scrollFocusedInputIntoVisibleBand(el) {
+    if (!isFormField(el)) return;
+    const vv = window.visualViewport;
+    const bandTop = vv ? Math.max(0, vv.offsetTop) : 0;
+    const bandHeight = vv ? vv.height : window.innerHeight;
+    const bandBottom = bandTop + bandHeight;
+
+    const inSheet = sheetContent && sheetContent.contains(el);
+    const scroller = inSheet ? sheetContent : mainScroll;
+    if (!scroller) return;
+
+    const headerEl = inSheet ? sheetContent.querySelector('.sheet-header') : topNav;
+    const headerH = headerEl ? headerEl.getBoundingClientRect().height : 0;
+    const scrollerRect = scroller.getBoundingClientRect();
+    const safeTop = Math.max(bandTop, scrollerRect.top) + (inSheet ? headerH + 10 : 12);
+    const safeBottom = Math.min(bandBottom, scrollerRect.bottom) - 14;
+
+    const r = el.getBoundingClientRect();
+    if (r.bottom > safeBottom) {
+      scroller.scrollTop += (r.bottom - safeBottom);
+    } else if (r.top < safeTop) {
+      scroller.scrollTop -= (safeTop - r.top);
+    }
   }
 
   function scheduleKeyboardDismissRecovery() {
@@ -1626,9 +1653,16 @@
       const vv = window.visualViewport;
       if (!vv) return;
       const kbGap = window.innerHeight - vv.height;
-      if (isFormField(document.activeElement) && kbGap > 110) {
+      const active = document.activeElement;
+      if (isFormField(active) && kbGap > 110) {
+        const kbTop = Math.max(0, Math.round(vv.offsetTop));
+        const kbHeight = Math.max(180, Math.round(vv.height));
+        const kbInset = Math.max(0, Math.round(window.innerHeight - (kbTop + kbHeight)));
         document.documentElement.classList.add('ios-kb-open');
-        document.documentElement.style.setProperty('--kb-height', `${Math.round(vv.height)}px`);
+        document.documentElement.style.setProperty('--kb-top', `${kbTop}px`);
+        document.documentElement.style.setProperty('--kb-height', `${kbHeight}px`);
+        document.documentElement.style.setProperty('--kb-inset', `${kbInset}px`);
+        requestAnimationFrame(() => scrollFocusedInputIntoVisibleBand(active));
       } else {
         clearKeyboardViewportState();
         restoreIOSViewport();
@@ -1658,12 +1692,15 @@
       if (!isFormField(e.target)) return;
       kbRestoreTimers.forEach((id) => clearTimeout(id));
       kbRestoreTimers = [];
+      handleVisualViewportChange();
       setTimeout(() => {
         handleVisualViewportChange();
-        if (document.activeElement === e.target && typeof e.target.scrollIntoView === 'function') {
-          try { e.target.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch {}
-        }
-      }, 240);
+        if (document.activeElement === e.target) scrollFocusedInputIntoVisibleBand(e.target);
+      }, 120);
+      setTimeout(() => {
+        handleVisualViewportChange();
+        if (document.activeElement === e.target) scrollFocusedInputIntoVisibleBand(e.target);
+      }, 300);
     });
 
     document.addEventListener('focusout', (e) => {
@@ -1693,13 +1730,12 @@
     sheetContent.innerHTML = html;
     sheetBackdrop.classList.remove('hidden');
     sheetBackdrop.setAttribute('aria-hidden', 'false');
-    requestAnimationFrame(() => {
-      sheetBackdrop.classList.add('is-open');
-      // Remove CSS transform once settled to prevent WebKit fixed-input hit-test offset
-      sheetSettleTimer = setTimeout(() => {
-        if (sheetBackdrop.classList.contains('is-open')) sheetBackdrop.classList.add('is-settled');
-      }, 300);
-    });
+    // Force WebKit layout flush before toggling .is-open so sheet never stalls off-screen
+    void sheetBackdrop.offsetHeight;
+    sheetBackdrop.classList.add('is-open');
+    sheetSettleTimer = setTimeout(() => {
+      if (sheetBackdrop.classList.contains('is-open')) sheetBackdrop.classList.add('is-settled');
+    }, 300);
   }
 
   function closeSheet() {
@@ -1910,6 +1946,8 @@ Script.complete();`;
       : '时序';
     const showFab = Boolean(u) && (state.activeTab === 'today' || state.activeTab === 'exams');
     fabAdd.classList.toggle('is-hidden', !showFab);
+    const tabBar = document.querySelector('.tab-bar');
+    if (tabBar) tabBar.classList.toggle('hidden', !u);
   }
 
   // =========================================================================
@@ -2056,10 +2094,13 @@ Script.complete();`;
     syncHeader();
 
     const savedScroll = mainScroll.scrollTop;
-    if (animate) {
-      viewContainer.style.animation = 'none';
-      void viewContainer.offsetWidth;
-      viewContainer.style.animation = '';
+    if (animate && typeof viewContainer.animate === 'function') {
+      try {
+        viewContainer.animate(
+          [{ opacity: 0.45, transform: 'translateY(6px)' }, { opacity: 1, transform: 'translateY(0)' }],
+          { duration: 220, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' }
+        );
+      } catch {}
     }
 
     if (!state.data.user) {
@@ -3252,13 +3293,15 @@ Script.complete();`;
           </div>
         </div>
 
-        <button type="submit" id="btn-save-task" class="btn-primary btn-block" style="margin-top:8px;">${isEdit ? '保存修改' : (taskType === 'review' ? '生成复习计划并排入时间轴' : '添加到任务序列')}</button>
-        ${isEdit ? `
-          <div class="btn-row" style="margin-top:10px;">
-            <button type="button" id="btn-move-tomorrow" class="btn-secondary">${taskType === 'review' ? '明日加练一轮' : '移至明日'}</button>
-            <button type="button" id="btn-focus-this-task" class="btn-secondary" style="color:var(--accent);">专注此任务</button>
-          </div>
-        ` : ''}
+        <div class="sheet-sticky-footer">
+          <button type="submit" id="btn-save-task" class="btn-primary btn-block">${isEdit ? '保存修改' : (taskType === 'review' ? '生成复习计划并排入时间轴' : '添加到任务序列')}</button>
+          ${isEdit ? `
+            <div class="btn-row" style="margin-top:8px;">
+              <button type="button" id="btn-move-tomorrow" class="btn-secondary">${taskType === 'review' ? '明日加练一轮' : '移至明日'}</button>
+              <button type="button" id="btn-focus-this-task" class="btn-secondary" style="color:var(--accent);">专注此任务</button>
+            </div>
+          ` : ''}
+        </div>
       </form>
     `);
 
