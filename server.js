@@ -96,6 +96,9 @@ function escapeXml(str) {
 }
 
 function isTaskOnDate(task, dateStr) {
+  if (Array.isArray(task.reviewDates) && task.reviewDates.length > 0) {
+    return task.reviewDates.includes(dateStr);
+  }
   if (!task.repeatDaily) return task.date === dateStr;
   return dateStr >= task.date;
 }
@@ -712,14 +715,23 @@ const server = http.createServer(async (req, res) => {
       if (categoryName !== '未分组') ensureCategoryForUser(userId, categoryName, body.categoryColor);
 
       const taskDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : todayKey();
+      const isReview = body.taskType === 'review';
+      const cleanReviewDates = isReview && Array.isArray(body.reviewDates)
+        ? Array.from(new Set(body.reviewDates.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d))))).sort()
+        : [];
       const task = {
         id: genId('t'),
         userId,
         title,
         category: categoryName,
         subject: categoryName,
+        taskType: isReview ? 'review' : 'normal',
+        reviewPreset: isReview ? String(body.reviewPreset || 'ebbinghaus').slice(0, 20) : '',
+        reviewDates: isReview ? (cleanReviewDates.length ? cleanReviewDates : [taskDate]) : [],
+        mistakeNote: isReview ? String(body.mistakeNote || '').trim().slice(0, 120) : '',
+        mastery: isReview && ['weak', 'reviewing', 'mastered'].includes(body.mastery) ? body.mastery : (isReview ? 'weak' : ''),
         durationMin: Math.min(360, Math.max(5, Number(body.durationMin) || 30)),
-        repeatDaily: Boolean(body.repeatDaily),
+        repeatDaily: isReview ? false : Boolean(body.repeatDaily),
         date: taskDate,
         completedDates: [],
         createdAt: Date.now()
@@ -763,6 +775,23 @@ const server = http.createServer(async (req, res) => {
       if (typeof body.scheduledDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.scheduledDate)) {
         task.date = body.scheduledDate;
       }
+      if (body.taskType === 'review' || body.taskType === 'normal') {
+        task.taskType = body.taskType;
+        if (task.taskType === 'normal') {
+          task.reviewDates = [];
+          task.reviewPreset = '';
+          task.mistakeNote = '';
+          task.mastery = '';
+        } else {
+          task.repeatDaily = false;
+        }
+      }
+      if (typeof body.reviewPreset === 'string') task.reviewPreset = body.reviewPreset.slice(0, 20);
+      if (Array.isArray(body.reviewDates)) {
+        task.reviewDates = Array.from(new Set(body.reviewDates.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d))))).sort();
+      }
+      if (typeof body.mistakeNote === 'string') task.mistakeNote = body.mistakeNote.trim().slice(0, 120);
+      if (['weak', 'reviewing', 'mastered', ''].includes(body.mastery)) task.mastery = body.mastery;
 
       const targetDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : todayKey();
       if (!Array.isArray(task.completedDates)) task.completedDates = [];

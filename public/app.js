@@ -155,7 +155,11 @@
       examSub: '距离目标 · 精准追踪',
       examTitle: '目标倒计时',
       examAddBtn: '+ 新目标',
-      wallpaperFallback: '前往「今日」添加你的学习任务清单'
+      wallpaperFallback: '前往「今日」添加你的学习任务清单',
+      reviewLabel: '错题复习',
+      reviewNotebook: '错题复习本',
+      reviewRound: (i, n) => `第 ${i}/${n} 轮复习`,
+      addReviewBtn: '+ 错题复习'
     },
     kitty: {
       id: 'kitty',
@@ -212,7 +216,11 @@
       examSub: '闪闪发光 · 心愿倒数',
       examTitle: '心愿倒数日',
       examAddBtn: '+ 新心愿',
-      wallpaperFallback: '打开时序写下今日份小目标吧'
+      wallpaperFallback: '打开时序写下今日份小目标吧',
+      reviewLabel: '错题小本',
+      reviewNotebook: '甜心错题本',
+      reviewRound: (i, n) => `第 ${i}/${n} 轮温习`,
+      addReviewBtn: '+ 记错题'
     },
     xianxia: {
       id: 'xianxia',
@@ -269,9 +277,75 @@
       examSub: '大劫将至 · 问鼎飞升',
       examTitle: '渡劫倒数',
       examAddBtn: '+ 立新劫',
-      wallpaperFallback: '前往修行录立下今日功课'
+      wallpaperFallback: '前往修行录立下今日功课',
+      reviewLabel: '心魔错题',
+      reviewNotebook: '心魔破障录',
+      reviewRound: (i, n) => `第 ${i}/${n} 重参悟`,
+      addReviewBtn: '+ 录心魔'
     }
   };
+
+  const REVIEW_PRESETS = {
+    ebbinghaus: {
+      id: 'ebbinghaus',
+      name: '艾宾浩斯曲线',
+      short: '艾宾浩斯 6 轮',
+      desc: '自动排入当日 +1/+2/+4/+7/+15 天时间轴',
+      offsets: [0, 1, 2, 4, 7, 15]
+    },
+    sprint: {
+      id: 'sprint',
+      name: '考前高频巩固',
+      short: '高频 4 轮',
+      desc: '自动排入当日 +1/+3/+7 天密集复盘',
+      offsets: [0, 1, 3, 7]
+    },
+    single: {
+      id: 'single',
+      name: '单日专项复习',
+      short: '单日复习',
+      desc: '仅在选定日期复习一次',
+      offsets: [0]
+    }
+  };
+
+  const MASTERY_LEVELS = {
+    weak: { id: 'weak', label: '未掌握', cls: 'is-weak', next: 'reviewing' },
+    reviewing: { id: 'reviewing', label: '待巩固', cls: 'is-reviewing', next: 'mastered' },
+    mastered: { id: 'mastered', label: '已掌握', cls: 'is-mastered', next: 'weak' }
+  };
+
+  const CLOSE_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+
+  function sheetCloseBtn() {
+    return `<button type="button" class="sheet-close" data-action="close-sheet" aria-label="关闭">${CLOSE_ICON_SVG}</button>`;
+  }
+
+  function generateReviewDates(startDate, presetId = 'ebbinghaus') {
+    const base = isValidDateISO(startDate) ? startDate : todayKey();
+    const preset = REVIEW_PRESETS[presetId] || REVIEW_PRESETS.ebbinghaus;
+    return Array.from(new Set(preset.offsets.map((d) => shiftDateISO(base, d)))).sort();
+  }
+
+  function isReviewTask(task) {
+    return Boolean(task && task.taskType === 'review');
+  }
+
+  function getReviewRoundInfo(task, dateStr) {
+    if (!isReviewTask(task)) return null;
+    const dates = Array.isArray(task.reviewDates) && task.reviewDates.length ? task.reviewDates : [task.date];
+    const idx = dates.indexOf(dateStr);
+    return {
+      round: idx >= 0 ? idx + 1 : 1,
+      total: dates.length
+    };
+  }
+
+  function formatShortMD(dateStr) {
+    if (!isValidDateISO(dateStr)) return dateStr;
+    const [, m, d] = dateStr.split('-').map(Number);
+    return `${m}/${d}`;
+  }
 
   function getPack() {
     return STYLE_PACKS[state.stylePack] || STYLE_PACKS.apple;
@@ -314,6 +388,7 @@
     stylePack: STYLE_PACKS[safeStorageGet('shixu_style_pack')] ? safeStorageGet('shixu_style_pack') : 'apple',
     theme: safeStorageGet('shixu_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
     activeTab: 'today',
+    taskFilter: 'all', // 'all' | 'review' | 'todo'
     selectedDate: todayKey(),
     viewMonth: currentMonthKey(),
     showMonthCalendar: false,
@@ -412,6 +487,9 @@
   }
 
   function isTaskOnDate(task, dateStr) {
+    if (Array.isArray(task.reviewDates) && task.reviewDates.length > 0) {
+      return task.reviewDates.includes(dateStr);
+    }
     if (!task.repeatDaily) return task.date === dateStr;
     return dateStr >= task.date;
   }
@@ -1129,10 +1207,26 @@
       if (categoryName !== '未分组') ensureLocalCategory(s, uid, categoryName, body.categoryColor);
 
       const taskDate = isValidDateISO(body.date) ? body.date : today;
+      const isReview = body.taskType === 'review';
+      const cleanReviewDates = isReview && Array.isArray(body.reviewDates)
+        ? Array.from(new Set(body.reviewDates.filter((d) => isValidDateISO(d)))).sort()
+        : [];
       const task = {
-        id: genId('t'), userId: uid, title, category: categoryName, subject: categoryName,
+        id: genId('t'),
+        userId: uid,
+        title,
+        category: categoryName,
+        subject: categoryName,
+        taskType: isReview ? 'review' : 'normal',
+        reviewPreset: isReview ? String(body.reviewPreset || 'ebbinghaus').slice(0, 20) : '',
+        reviewDates: isReview ? (cleanReviewDates.length ? cleanReviewDates : [taskDate]) : [],
+        mistakeNote: isReview ? String(body.mistakeNote || '').trim().slice(0, 120) : '',
+        mastery: isReview && MASTERY_LEVELS[body.mastery] ? body.mastery : (isReview ? 'weak' : ''),
         durationMin: Math.min(360, Math.max(5, Number(body.durationMin) || 30)),
-        repeatDaily: Boolean(body.repeatDaily), date: taskDate, completedDates: [], createdAt: Date.now()
+        repeatDaily: isReview ? false : Boolean(body.repeatDaily),
+        date: taskDate,
+        completedDates: [],
+        createdAt: Date.now()
       };
       s.tasks.unshift(task);
       saveLocalStore(s);
@@ -1156,6 +1250,23 @@
       }
       if (typeof body.repeatDaily === 'boolean') task.repeatDaily = body.repeatDaily;
       if (isValidDateISO(body.scheduledDate)) task.date = body.scheduledDate;
+      if (body.taskType === 'review' || body.taskType === 'normal') {
+        task.taskType = body.taskType;
+        if (task.taskType === 'normal') {
+          task.reviewDates = [];
+          task.reviewPreset = '';
+          task.mistakeNote = '';
+          task.mastery = '';
+        } else {
+          task.repeatDaily = false;
+        }
+      }
+      if (typeof body.reviewPreset === 'string') task.reviewPreset = body.reviewPreset.slice(0, 20);
+      if (Array.isArray(body.reviewDates)) {
+        task.reviewDates = Array.from(new Set(body.reviewDates.filter((d) => isValidDateISO(d)))).sort();
+      }
+      if (typeof body.mistakeNote === 'string') task.mistakeNote = body.mistakeNote.trim().slice(0, 120);
+      if (body.mastery === '' || MASTERY_LEVELS[body.mastery]) task.mastery = body.mastery;
 
       const targetDate = isValidDateISO(body.date) ? body.date : today;
       if (!Array.isArray(task.completedDates)) task.completedDates = [];
@@ -1414,7 +1525,7 @@
     openSheet(`
       <div class="sheet-header">
         <h2 class="sheet-title">主题风格与话术切换</h2>
-        <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
+        ${sheetCloseBtn()}
       </div>
       <p style="font-size:12px;color:var(--text-secondary);margin:0 0 14px;line-height:1.5;">
         自由选择你喜欢的界面视觉与专属陪伴话术，随时无损切换，所有学习数据完整保留。
@@ -1466,26 +1577,81 @@
   }
 
   // =========================================================================
+  // iOS Safari VisualViewport Guard (Prevents keyboard viewport shift &
+  // fixed-button hit-testing offset on iPhone Safari!)
+  // =========================================================================
+
+  function syncVisualViewportVars() {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const h = Math.round(vv.height);
+    const t = Math.max(0, Math.round(vv.offsetTop));
+    document.documentElement.style.setProperty('--vv-height', `${h}px`);
+    document.documentElement.style.setProperty('--vv-top', `${t}px`);
+  }
+
+  function resetIOSViewportScroll() {
+    if (window.scrollY !== 0 || window.scrollX !== 0) {
+      window.scrollTo(0, 0);
+    }
+    syncVisualViewportVars();
+  }
+
+  function blurActiveInput() {
+    const el = document.activeElement;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
+      el.blur();
+    }
+  }
+
+  (function initIOSViewportGuard() {
+    syncVisualViewportVars();
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', syncVisualViewportVars);
+      window.visualViewport.addEventListener('scroll', syncVisualViewportVars);
+    }
+    window.addEventListener('orientationchange', () => {
+      setTimeout(resetIOSViewportScroll, 120);
+    });
+    document.addEventListener('focusout', (e) => {
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) {
+        requestAnimationFrame(resetIOSViewportScroll);
+        setTimeout(resetIOSViewportScroll, 80);
+        setTimeout(resetIOSViewportScroll, 220);
+      }
+    });
+  })();
+
+  // =========================================================================
   // Native iOS Bottom Sheet with 1:1 Touch Swipe-Down to Dismiss + Esc Key
   // =========================================================================
 
   function openSheet(html) {
+    blurActiveInput();
+    resetIOSViewportScroll();
     sheetPanel.style.transform = '';
     sheetPanel.classList.remove('is-dragging');
+    sheetContent.scrollTop = 0;
     sheetContent.innerHTML = html;
     sheetBackdrop.classList.remove('hidden');
     sheetBackdrop.setAttribute('aria-hidden', 'false');
-    requestAnimationFrame(() => sheetBackdrop.classList.add('is-open'));
+    requestAnimationFrame(() => {
+      syncVisualViewportVars();
+      sheetBackdrop.classList.add('is-open');
+    });
   }
 
   function closeSheet() {
+    blurActiveInput();
     sheetPanel.style.transform = '';
     sheetPanel.classList.remove('is-dragging');
     sheetBackdrop.classList.remove('is-open');
     sheetBackdrop.setAttribute('aria-hidden', 'true');
+    requestAnimationFrame(resetIOSViewportScroll);
     setTimeout(() => {
+      resetIOSViewportScroll();
       if (!sheetBackdrop.classList.contains('is-open')) sheetBackdrop.classList.add('hidden');
-    }, 320);
+    }, 300);
   }
 
   sheetBackdrop.addEventListener('click', (e) => { if (e.target === sheetBackdrop) closeSheet(); });
@@ -1503,24 +1669,26 @@
 
     grabber.addEventListener('touchstart', (e) => {
       if (!e.touches || !e.touches[0]) return;
+      if (e.target && e.target.closest('button, input, textarea, a')) return;
       startY = e.touches[0].clientY;
       currentY = 0;
       dragging = true;
-      sheetPanel.classList.add('is-dragging');
     }, { passive: true });
 
     grabber.addEventListener('touchmove', (e) => {
       if (!dragging || !e.touches || !e.touches[0]) return;
       const dy = Math.max(0, e.touches[0].clientY - startY);
+      if (dy < 8) return;
+      sheetPanel.classList.add('is-dragging');
       currentY = dy;
-      sheetPanel.style.transform = `translateY(${dy}px)`;
+      sheetPanel.style.transform = `translate3d(0, ${dy}px, 0)`;
     }, { passive: true });
 
     grabber.addEventListener('touchend', () => {
       if (!dragging) return;
       dragging = false;
       sheetPanel.classList.remove('is-dragging');
-      if (currentY > 88) closeSheet();
+      if (currentY > 84) closeSheet();
       else sheetPanel.style.transform = '';
     });
   })();
@@ -2028,15 +2196,25 @@ Script.complete();`;
     const primaryGroup = groups[0];
     const realmLabel = state.stylePack === 'xianxia' ? getXianxiaRealm(user.streak) : '';
 
+    const allReviewTasks = tasks.filter((t) => isReviewTask(t));
+    const dayReviewCount = dayStats.list.filter((t) => isReviewTask(t)).length;
+    const dayTodoCount = dayStats.list.filter((t) => !isTaskDoneOnDate(t, sel)).length;
+
+    const visibleList = dayStats.list.filter((t) => {
+      if (state.taskFilter === 'review') return isReviewTask(t);
+      if (state.taskFilter === 'todo') return !isTaskDoneOnDate(t, sel);
+      return true;
+    });
+
     const colorMap = new Map();
     for (const c of categories) colorMap.set(c.name, c.color);
 
     const groupMap = new Map();
     for (const c of categories) {
-      const catTasks = dayStats.list.filter((t) => t.category === c.name);
+      const catTasks = visibleList.filter((t) => t.category === c.name);
       if (catTasks.length) groupMap.set(c.name, catTasks);
     }
-    for (const t of dayStats.list) {
+    for (const t of visibleList) {
       const key = t.category || '未分组';
       if (!groupMap.has(key)) groupMap.set(key, []);
       if (!groupMap.get(key).includes(t)) groupMap.get(key).push(t);
@@ -2061,7 +2239,7 @@ Script.complete();`;
         <div style="display:flex;align-items:center;gap:6px;">
           ${realmLabel ? `<span class="realm-badge">${realmLabel}</span>` : ''}
           ${primaryGroup ? `
-            <button class="btn-secondary btn-sm" data-action="goto-groups">${esc(p.tabs.groups)} ${primaryGroup.teamPct}%</button>
+            <button type="button" class="btn-secondary btn-sm" data-action="goto-groups">${esc(p.tabs.groups)} ${primaryGroup.teamPct}%</button>
           ` : ''}
         </div>
       </div>
@@ -2092,14 +2270,14 @@ Script.complete();`;
         <section class="card card-padded" style="text-align:center;padding:20px 18px;">
           <div style="font-size:15px;font-weight:700;">${esc(p.countdownEmptyTitle)}</div>
           <p style="font-size:12px;color:var(--text-secondary);margin:5px 0 12px;">${esc(p.countdownEmptyDesc)}</p>
-          <button class="btn-primary btn-sm" data-action="open-add-exam">${esc(p.countdownEmptyBtn)}</button>
+          <button type="button" class="btn-primary btn-sm" data-action="open-add-exam">${esc(p.countdownEmptyBtn)}</button>
         </section>
       `}
 
       ${buildTimelineSection(tasks)}
 
       <section class="summary-strip">
-        <button class="card summary-tile" data-action="open-analytics" style="text-align:left;">
+        <button type="button" class="card summary-tile" data-action="open-analytics" style="text-align:left;">
           <div>
             <div class="summary-label">${sel === todayKey() ? esc(p.tileProgressToday) : esc(p.tileProgressOther)}</div>
             <div class="summary-value tabular">${dayStats.done} / ${dayStats.total}</div>
@@ -2111,7 +2289,7 @@ Script.complete();`;
           </div>
         </button>
 
-        <button class="card summary-tile" data-action="open-focus" style="text-align:left;">
+        <button type="button" class="card summary-tile" data-action="open-focus" style="text-align:left;">
           <div>
             <div class="summary-label">${esc(p.tileFocus)}</div>
             <div class="summary-value tabular">${user.focusMinutesToday || 0}<span style="font-size:13px;font-weight:500;margin-left:2px;">分</span></div>
@@ -2126,10 +2304,23 @@ Script.complete();`;
 
       <div class="section-header">
         <h2 class="section-title">${formatDateCN(sel)} · ${esc(p.taskSeqLabel)}</h2>
-        <div style="display:flex;align-items:center;gap:12px;">
-          <button class="section-action" style="color:var(--text-secondary);" data-action="open-manage-categories">${esc(p.manageCatsBtn)}</button>
-          <button class="section-action" data-action="open-add-task">${esc(p.addTaskBtn)}</button>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <button type="button" class="section-action" style="color:var(--text-secondary);" data-action="open-manage-categories">${esc(p.manageCatsBtn)}</button>
+          <button type="button" class="section-action" style="color:var(--orange);" data-action="open-add-review">${esc(p.addReviewBtn)}</button>
+          <button type="button" class="section-action" data-action="open-add-task">${esc(p.addTaskBtn)}</button>
         </div>
+      </div>
+
+      <div class="task-filter-bar">
+        <div class="segmented-control">
+          <button type="button" class="seg-btn ${state.taskFilter === 'all' ? 'is-active' : ''}" data-action="set-task-filter" data-filter="all">全部 (${dayStats.total})</button>
+          <button type="button" class="seg-btn ${state.taskFilter === 'review' ? 'is-active' : ''}" data-action="set-task-filter" data-filter="review">${esc(p.reviewLabel)} (${dayReviewCount})</button>
+          <button type="button" class="seg-btn ${state.taskFilter === 'todo' ? 'is-active' : ''}" data-action="set-task-filter" data-filter="todo">待完成 (${dayTodoCount})</button>
+        </div>
+        <button type="button" class="review-notebook-btn" data-action="open-review-notebook">
+          <span>${esc(p.reviewNotebook)}</span>
+          <span class="tabular">${allReviewTasks.length}</span>
+        </button>
       </div>
 
       ${groupedEntries.length ? `
@@ -2143,32 +2334,37 @@ Script.complete();`;
                 </div>
                 <div class="category-head-right">
                   <span class="category-count">${grp.done} / ${grp.items.length}</span>
-                  <button class="category-quick-add" data-action="open-add-task-in-cat" data-category="${esc(grp.name)}" title="在「${esc(grp.name)}」下添加任务">+</button>
+                  <button type="button" class="category-quick-add" data-action="open-add-task-in-cat" data-category="${esc(grp.name)}" title="在「${esc(grp.name)}」下添加任务">+</button>
                 </div>
               </div>
 
               <div class="ios-list">
                 ${grp.items.map((t) => {
                   const done = isTaskDoneOnDate(t, sel);
+                  const review = isReviewTask(t);
+                  const roundInfo = review ? getReviewRoundInfo(t, sel) : null;
+                  const masteryObj = review ? (MASTERY_LEVELS[t.mastery] || MASTERY_LEVELS.weak) : null;
                   return `
-                    <div class="task-row ${done ? 'is-done' : ''}" data-task-row="${t.id}">
-                      <button class="task-check-btn" data-action="toggle-task" data-id="${t.id}" aria-label="${done ? '取消完成' : '标记完成'}">
+                    <div class="task-row ${done ? 'is-done' : ''} ${review ? 'is-review-task' : ''}" data-task-row="${t.id}">
+                      <button type="button" class="task-check-btn" data-action="toggle-task" data-id="${t.id}" aria-label="${done ? '取消完成' : '标记完成'}">
                         <svg class="task-check-svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
                           <path d="M4.5 10.5l3.6 3.6 7.4-7.8"/>
                         </svg>
                       </button>
-                      <button class="task-main" data-action="edit-task" data-id="${t.id}">
+                      <button type="button" class="task-main" data-action="edit-task" data-id="${t.id}">
                         <div class="task-title">${esc(t.title)}</div>
+                        ${review && t.mistakeNote ? `<div class="task-mistake-note">${esc(t.mistakeNote)}</div>` : ''}
                         <div class="task-meta">
+                          ${review && roundInfo ? `<span class="review-round-tag">${esc(p.reviewRound(roundInfo.round, roundInfo.total))}</span>` : ''}
                           <span class="tabular">${t.durationMin} 分钟</span>
                           ${t.repeatDaily ? '<span>· 每日重复</span>' : ''}
-                          <span class="task-row-edit-hint">· 点击编辑</span>
                         </div>
                       </button>
-                      <button class="task-delete-btn" data-action="delete-task" data-id="${t.id}" aria-label="删除任务" title="删除">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                          <path d="M18 6L6 18M6 6l12 12"/>
-                        </svg>
+                      ${masteryObj ? `
+                        <button type="button" class="mastery-pill ${masteryObj.cls}" data-action="cycle-mastery" data-id="${t.id}" title="点击切换掌握状态">${masteryObj.label}</button>
+                      ` : ''}
+                      <button type="button" class="task-delete-btn" data-action="delete-task" data-id="${t.id}" aria-label="删除任务" title="删除">
+                        ${CLOSE_ICON_SVG}
                       </button>
                     </div>
                   `;
@@ -2179,11 +2375,22 @@ Script.complete();`;
         </div>
       ` : `
         <section class="card empty-box">
-          <div style="font-size:15px;font-weight:600;color:var(--text-primary);">${getRelativeDayTitle(sel)}${esc(p.taskEmptyTitleSuffix)}</div>
-          <p style="font-size:12px;margin:6px 0 14px;">${esc(p.taskEmptyDesc)}</p>
-          <div style="display:flex;justify-content:center;gap:8px;">
-            <button class="btn-secondary btn-sm" data-action="open-manage-categories">${esc(p.manageCatsBtn)}</button>
-            <button class="btn-primary btn-sm" data-action="open-add-task">${esc(p.addTaskBtn)}</button>
+          <div style="font-size:15px;font-weight:600;color:var(--text-primary);">
+            ${state.taskFilter === 'review'
+              ? `${getRelativeDayTitle(sel)}暂无${esc(p.reviewLabel)}安排`
+              : (state.taskFilter === 'todo' && dayStats.total > 0
+                ? `${getRelativeDayTitle(sel)}全部任务已完成`
+                : `${getRelativeDayTitle(sel)}${esc(p.taskEmptyTitleSuffix)}`)}
+          </div>
+          <p style="font-size:12px;margin:6px 0 14px;">
+            ${state.taskFilter === 'review'
+              ? '记录一道错题或知识点，系统将按艾宾浩斯遗忘曲线自动排入未来 15 天时间轴提醒复习。'
+              : esc(p.taskEmptyDesc)}
+          </p>
+          <div style="display:flex;justify-content:center;flex-wrap:wrap;gap:8px;">
+            ${state.taskFilter !== 'all' ? `<button type="button" class="btn-secondary btn-sm" data-action="set-task-filter" data-filter="all">查看全部任务</button>` : ''}
+            <button type="button" class="btn-secondary btn-sm" style="color:var(--orange);" data-action="open-add-review">${esc(p.addReviewBtn)}</button>
+            <button type="button" class="btn-primary btn-sm" data-action="open-add-task">${esc(p.addTaskBtn)}</button>
           </div>
         </section>
       `}
@@ -2510,10 +2717,15 @@ Script.complete();`;
     const catList = Array.from(catTotals.values()).sort((a, b) => b.done - a.done || b.total - a.total);
     const maxDone = Math.max(1, ...catList.map((c) => c.done));
 
+    const reviewTasks = tasks.filter((t) => isReviewTask(t));
+    const masteredCount = reviewTasks.filter((t) => t.mastery === 'mastered').length;
+    const reviewPct = reviewTasks.length ? Math.round((masteredCount / reviewTasks.length) * 100) : 0;
+    const p = getPack();
+
     openSheet(`
       <div class="sheet-header">
         <h2 class="sheet-title">学习复盘与趋势</h2>
-        <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
+        ${sheetCloseBtn()}
       </div>
 
       <div class="month-kpi-strip" style="margin-bottom:14px;">
@@ -2530,6 +2742,22 @@ Script.complete();`;
           <div class="month-kpi-lbl">周平均达成</div>
         </div>
       </div>
+
+      ${reviewTasks.length ? `
+        <div class="card card-padded" style="margin-bottom:14px;background:var(--bg-surface);">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <span style="font-size:13px;font-weight:700;">${esc(p.reviewNotebook)}掌握度</span>
+            <button type="button" class="section-action" style="font-size:12px;" data-action="open-review-notebook">查看全部 (${reviewTasks.length}) ›</button>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--text-secondary);margin-bottom:6px;">
+            <span>已掌握 ${masteredCount} / ${reviewTasks.length} 题</span>
+            <span class="tabular" style="font-weight:700;color:var(--green);">${reviewPct}%</span>
+          </div>
+          <div class="progress-track" style="height:6px;">
+            <div class="progress-bar-fill" style="width:${reviewPct}%;background:var(--green);"></div>
+          </div>
+        </div>
+      ` : ''}
 
       <div class="card card-padded" style="margin-bottom:14px;background:var(--bg-surface);">
         <div style="font-size:13px;font-weight:700;margin-bottom:6px;">近 7 日任务达成趋势</div>
@@ -2580,7 +2808,7 @@ Script.complete();`;
     openSheet(`
       <div class="sheet-header">
         <h2 class="sheet-title">统一账户与数据记忆</h2>
-        <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
+        ${sheetCloseBtn()}
       </div>
 
       <div class="card card-padded" style="margin-bottom:14px;background:var(--bg-surface);">
@@ -2631,7 +2859,7 @@ Script.complete();`;
         <div class="field-label" style="margin-bottom:8px;">快速切换本机已记忆账户</div>
         <div style="margin-bottom:14px;">
           ${users.filter((u) => u.id !== user.id).map((u) => `
-            <button class="account-row" data-switch-user="${u.id}" data-switch-acc="${esc(u.account)}">
+            <button type="button" class="account-row" data-switch-user="${u.id}" data-switch-acc="${esc(u.account)}">
               <div class="account-left">
                 <span class="avatar-dot" style="width:30px;height:30px;font-size:12px;background:${u.color}">${esc(u.avatar)}</span>
                 <div style="text-align:left;">
@@ -2730,7 +2958,7 @@ Script.complete();`;
     openSheet(`
       <div class="sheet-header">
         <h2 class="sheet-title">${esc(p.catSheetTitle)}</h2>
-        <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
+        ${sheetCloseBtn()}
       </div>
       <p style="font-size:12px;color:var(--text-secondary);margin:0 0 14px;line-height:1.5;">
         ${esc(p.catSheetDesc)}
@@ -2739,7 +2967,7 @@ Script.complete();`;
       <form id="form-new-category" style="margin-bottom:16px;">
         <div class="field">
           <label class="field-label" for="input-new-cat-name">新建大标题名称</label>
-          <input id="input-new-cat-name" class="input" type="text" required maxlength="18" placeholder="${esc(p.catPlaceholder)}" autofocus />
+          <input id="input-new-cat-name" class="input" type="text" required maxlength="18" placeholder="${esc(p.catPlaceholder)}" />
         </div>
         <div class="field">
           <label class="field-label">标记颜色</label>
@@ -2760,7 +2988,7 @@ Script.complete();`;
               <span class="category-color-dot" style="background:${c.color}"></span>
               <input class="cat-manage-input" type="text" maxlength="18" value="${esc(c.name)}" data-cat-input="${c.id}" />
               <button type="button" class="btn-secondary btn-sm" data-save-cat="${c.id}">保存</button>
-              <button type="button" class="task-delete-btn" data-del-cat="${c.id}" aria-label="删除大标题">×</button>
+              <button type="button" class="task-delete-btn" data-del-cat="${c.id}" aria-label="删除大标题">${CLOSE_ICON_SVG}</button>
             </div>
           `).join('')}
         </div>
@@ -2815,21 +3043,61 @@ Script.complete();`;
     });
   }
 
-  function openTaskEditorSheet(existingTask = null, prefillCategory = '') {
+  function openTaskEditorSheet(existingTask = null, prefillCategory = '', defaultType = 'normal') {
+    const p = getPack();
     const isEdit = Boolean(existingTask);
     const cats = (state.data && state.data.categories) || [];
     const initialCat = isEdit ? (existingTask.category || '') : (prefillCategory || (cats[0] ? cats[0].name : ''));
     const initialTitle = isEdit ? existingTask.title : '';
     const initialDate = isEdit ? existingTask.date : state.selectedDate;
-    const initialDur = isEdit ? (existingTask.durationMin || 45) : 45;
+    const initialDur = isEdit ? (existingTask.durationMin || 45) : (defaultType === 'review' ? 25 : 45);
+    let taskType = isEdit ? (isReviewTask(existingTask) ? 'review' : 'normal') : (defaultType === 'review' ? 'review' : 'normal');
+    let reviewPreset = isEdit && existingTask.reviewPreset && REVIEW_PRESETS[existingTask.reviewPreset]
+      ? existingTask.reviewPreset
+      : 'ebbinghaus';
+    let mastery = isEdit && MASTERY_LEVELS[existingTask.mastery] ? existingTask.mastery : 'weak';
     let repeatDaily = isEdit ? Boolean(existingTask.repeatDaily) : false;
+    const initialNote = isEdit ? (existingTask.mistakeNote || '') : '';
+    const existingDoneDates = new Set(isEdit && Array.isArray(existingTask.completedDates) ? existingTask.completedDates : []);
+    let scheduleDirty = false;
+    let submitting = false;
+
+    function computeCurrentReviewDates() {
+      const dateInputEl = document.getElementById('input-task-date');
+      const baseDate = (dateInputEl && dateInputEl.value) || initialDate;
+      if (isEdit && isReviewTask(existingTask) && !scheduleDirty && Array.isArray(existingTask.reviewDates) && existingTask.reviewDates.length) {
+        return existingTask.reviewDates;
+      }
+      return generateReviewDates(baseDate, reviewPreset);
+    }
+
+    function renderScheduleChipsHTML(dates) {
+      return dates.map((d, idx) => `
+        <span class="review-date-chip ${existingDoneDates.has(d) ? 'is-done' : ''}">
+          第${idx + 1}轮 ${formatShortMD(d)}${existingDoneDates.has(d) ? ' ✓' : ''}
+        </span>
+      `).join('');
+    }
+
+    const initialDates = taskType === 'review'
+      ? (isEdit && isReviewTask(existingTask) && Array.isArray(existingTask.reviewDates) && existingTask.reviewDates.length
+        ? existingTask.reviewDates
+        : generateReviewDates(initialDate, reviewPreset))
+      : generateReviewDates(initialDate, reviewPreset);
 
     openSheet(`
       <div class="sheet-header">
-        <h2 class="sheet-title">${isEdit ? '编辑学习任务' : '新建学习任务'}</h2>
-        <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
+        <h2 class="sheet-title">${isEdit ? '编辑任务' : (taskType === 'review' ? `新建${esc(p.reviewLabel)}` : '新建学习任务')}</h2>
+        ${sheetCloseBtn()}
       </div>
       <form id="form-task-editor">
+        <div class="field">
+          <div class="segmented-control" style="width:100%;display:grid;grid-template-columns:1fr 1fr;">
+            <button type="button" class="seg-btn ${taskType === 'normal' ? 'is-active' : ''}" data-pick-type="normal">普通学习任务</button>
+            <button type="button" class="seg-btn ${taskType === 'review' ? 'is-active' : ''}" data-pick-type="review">${esc(p.reviewLabel)}计划</button>
+          </div>
+        </div>
+
         <div class="field">
           <label class="field-label" for="input-task-category">任务大标题（可自由命名或点选已有）</label>
           <input id="input-task-category" class="input" type="text" required maxlength="18" placeholder="例如：专业课、高数、英语精读" value="${esc(initialCat)}" />
@@ -2843,13 +3111,13 @@ Script.complete();`;
         </div>
 
         <div class="field">
-          <label class="field-label" for="input-task-title">具体任务内容</label>
-          <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="例如：刷完第三章真题并整理错题" value="${esc(initialTitle)}" autofocus />
+          <label class="field-label" id="lbl-task-title" for="input-task-title">${taskType === 'review' ? '错题 / 复习知识点名称' : '具体任务内容'}</label>
+          <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="${taskType === 'review' ? '例如：高数定积分换元错题 / 民法善意取得易错点' : '例如：刷完第三章真题并整理笔记'}" value="${esc(initialTitle)}" />
         </div>
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
           <div class="field">
-            <label class="field-label" for="input-task-date">安排日期</label>
+            <label class="field-label" id="lbl-task-date" for="input-task-date">${taskType === 'review' ? '首次复习日期' : '安排日期'}</label>
             <input id="input-task-date" class="input tabular" type="date" required value="${esc(initialDate)}" />
           </div>
           <div class="field">
@@ -2858,7 +3126,7 @@ Script.complete();`;
           </div>
         </div>
 
-        <div class="field">
+        <div id="normal-repeat-section" class="field ${taskType === 'review' ? 'hidden' : ''}">
           <div class="switch-row">
             <div>
               <div style="font-size:14px;font-weight:600;">每日自动重复</div>
@@ -2868,10 +3136,41 @@ Script.complete();`;
           </div>
         </div>
 
-        <button type="submit" class="btn-primary btn-block" style="margin-top:8px;">${isEdit ? '保存修改' : '添加到任务序列'}</button>
+        <div id="review-plan-section" class="${taskType === 'review' ? '' : 'hidden'}">
+          <div class="field">
+            <label class="field-label">智能复习周期（自动排入时间轴与月历）</label>
+            <div class="chip-row" id="review-preset-chips">
+              ${Object.values(REVIEW_PRESETS).map((pr) => `
+                <button type="button" class="choice-chip ${pr.id === reviewPreset ? 'is-selected' : ''}" data-pick-preset="${pr.id}">${esc(pr.short)}</button>
+              `).join('')}
+            </div>
+            <div id="review-preset-desc" style="font-size:12px;color:var(--text-secondary);margin-top:6px;">
+              ${esc((REVIEW_PRESETS[reviewPreset] || REVIEW_PRESETS.ebbinghaus).desc)}
+            </div>
+            <div class="review-schedule-preview" id="review-schedule-preview">
+              ${renderScheduleChipsHTML(initialDates)}
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="field-label">当前掌握程度</label>
+            <div class="chip-row" id="review-mastery-chips">
+              ${Object.values(MASTERY_LEVELS).map((m) => `
+                <button type="button" class="choice-chip ${m.id === mastery ? 'is-selected' : ''}" data-pick-mastery="${m.id}">${m.label}</button>
+              `).join('')}
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="field-label" for="input-mistake-note">错因 / 关键解题思路（选填）</label>
+            <textarea id="input-mistake-note" class="input" maxlength="120" rows="2" placeholder="记录当时为什么做错、关键公式或易混陷阱，下次复习一眼回想…">${esc(initialNote)}</textarea>
+          </div>
+        </div>
+
+        <button type="submit" id="btn-save-task" class="btn-primary btn-block" style="margin-top:8px;">${isEdit ? '保存修改' : (taskType === 'review' ? '生成复习计划并排入时间轴' : '添加到任务序列')}</button>
         ${isEdit ? `
           <div class="btn-row" style="margin-top:10px;">
-            <button type="button" id="btn-move-tomorrow" class="btn-secondary">移至明日</button>
+            <button type="button" id="btn-move-tomorrow" class="btn-secondary">${taskType === 'review' ? '明日加练一轮' : '移至明日'}</button>
             <button type="button" id="btn-focus-this-task" class="btn-secondary" style="color:var(--accent);">专注此任务</button>
           </div>
         ` : ''}
@@ -2879,6 +3178,63 @@ Script.complete();`;
     `);
 
     const catInput = document.getElementById('input-task-category');
+    const titleLabel = document.getElementById('lbl-task-title');
+    const titleInput = document.getElementById('input-task-title');
+    const dateLabel = document.getElementById('lbl-task-date');
+    const dateInput = document.getElementById('input-task-date');
+    const normalSec = document.getElementById('normal-repeat-section');
+    const reviewSec = document.getElementById('review-plan-section');
+    const presetDescEl = document.getElementById('review-preset-desc');
+    const previewEl = document.getElementById('review-schedule-preview');
+    const saveBtn = document.getElementById('btn-save-task');
+
+    function refreshReviewPreview() {
+      const dates = computeCurrentReviewDates();
+      previewEl.innerHTML = renderScheduleChipsHTML(dates);
+      presetDescEl.textContent = (REVIEW_PRESETS[reviewPreset] || REVIEW_PRESETS.ebbinghaus).desc;
+    }
+
+    sheetContent.querySelectorAll('[data-pick-type]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        taskType = btn.dataset.pickType;
+        sheetContent.querySelectorAll('[data-pick-type]').forEach((b) => b.classList.toggle('is-active', b === btn));
+        const isRev = taskType === 'review';
+        normalSec.classList.toggle('hidden', isRev);
+        reviewSec.classList.toggle('hidden', !isRev);
+        titleLabel.textContent = isRev ? '错题 / 复习知识点名称' : '具体任务内容';
+        titleInput.placeholder = isRev ? '例如：高数定积分换元错题 / 民法善意取得易错点' : '例如：刷完第三章真题并整理笔记';
+        dateLabel.textContent = isRev ? '首次复习日期' : '安排日期';
+        if (!isEdit) saveBtn.textContent = isRev ? '生成复习计划并排入时间轴' : '添加到任务序列';
+        if (isRev) {
+          scheduleDirty = true;
+          refreshReviewPreview();
+        }
+      });
+    });
+
+    sheetContent.querySelectorAll('[data-pick-preset]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        reviewPreset = btn.dataset.pickPreset;
+        scheduleDirty = true;
+        sheetContent.querySelectorAll('[data-pick-preset]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+        refreshReviewPreview();
+      });
+    });
+
+    sheetContent.querySelectorAll('[data-pick-mastery]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        mastery = btn.dataset.pickMastery;
+        sheetContent.querySelectorAll('[data-pick-mastery]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+      });
+    });
+
+    dateInput.addEventListener('change', () => {
+      if (taskType === 'review') {
+        scheduleDirty = true;
+        refreshReviewPreview();
+      }
+    });
+
     sheetContent.querySelectorAll('[data-pick-cat]').forEach((btn) => {
       btn.addEventListener('click', () => {
         catInput.value = btn.dataset.pickCat;
@@ -2900,19 +3256,31 @@ Script.complete();`;
 
     if (isEdit) {
       document.getElementById('btn-move-tomorrow').addEventListener('click', async () => {
+        blurActiveInput();
         const tom = shiftDateISO(todayKey(), 1);
         closeSheet();
         try {
-          await api(`/api/tasks/${existingTask.id}`, {
-            method: 'PATCH',
-            body: JSON.stringify({ scheduledDate: tom, repeatDaily: false })
-          });
-          await loadBootstrap(true);
-          showHud('已移至明日计划');
+          if (isReviewTask(existingTask)) {
+            const nextDates = Array.from(new Set([...(existingTask.reviewDates || [existingTask.date]), tom])).sort();
+            await api(`/api/tasks/${existingTask.id}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ reviewDates: nextDates })
+            });
+            await loadBootstrap(true);
+            showHud('已将明日加入复习计划');
+          } else {
+            await api(`/api/tasks/${existingTask.id}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ scheduledDate: tom, repeatDaily: false })
+            });
+            await loadBootstrap(true);
+            showHud('已移至明日计划');
+          }
         } catch (err) { showHud(err.message, 'var(--red)'); }
       });
 
       document.getElementById('btn-focus-this-task').addEventListener('click', () => {
+        blurActiveInput();
         state.focus.label = `${existingTask.category} · ${existingTask.title}`;
         if (!state.focus.running) {
           state.focus.presetMin = Math.min(60, Math.max(15, existingTask.durationMin || 25));
@@ -2924,31 +3292,182 @@ Script.complete();`;
 
     document.getElementById('form-task-editor').addEventListener('submit', async (e) => {
       e.preventDefault();
+      if (submitting) return;
+      blurActiveInput();
       const category = catInput.value.trim() || '未分组';
-      const title = document.getElementById('input-task-title').value.trim();
-      const date = document.getElementById('input-task-date').value || state.selectedDate;
+      const title = titleInput.value.trim();
+      const date = dateInput.value || state.selectedDate;
       const durationMin = Number(document.getElementById('input-task-duration').value) || 30;
+      const mistakeNote = (document.getElementById('input-mistake-note').value || '').trim();
       if (!title) return;
+      submitting = true;
+      const reviewDates = taskType === 'review' ? computeCurrentReviewDates() : [];
+
       closeSheet();
       try {
         if (isEdit) {
           await api(`/api/tasks/${existingTask.id}`, {
             method: 'PATCH',
-            body: JSON.stringify({ category, title, scheduledDate: date, durationMin, repeatDaily })
+            body: JSON.stringify({
+              category,
+              title,
+              scheduledDate: date,
+              durationMin,
+              repeatDaily: taskType === 'review' ? false : repeatDaily,
+              taskType,
+              reviewPreset: taskType === 'review' ? reviewPreset : '',
+              reviewDates,
+              mistakeNote: taskType === 'review' ? mistakeNote : '',
+              mastery: taskType === 'review' ? mastery : ''
+            })
           });
           await loadBootstrap(true);
-          showHud('任务已更新');
+          showHud(taskType === 'review' ? `复习计划已更新（共 ${reviewDates.length} 轮）` : '任务已更新');
         } else {
           await api('/api/tasks', {
             method: 'POST',
-            body: JSON.stringify({ userId: state.userId, category, title, date, durationMin, repeatDaily })
+            body: JSON.stringify({
+              userId: state.userId,
+              category,
+              title,
+              date,
+              durationMin,
+              repeatDaily: taskType === 'review' ? false : repeatDaily,
+              taskType,
+              reviewPreset: taskType === 'review' ? reviewPreset : '',
+              reviewDates,
+              mistakeNote: taskType === 'review' ? mistakeNote : '',
+              mastery: taskType === 'review' ? mastery : ''
+            })
           });
           state.selectedDate = date;
           state.viewMonth = currentMonthKey(date);
           await loadBootstrap(true);
-          showHud(`已添加到「${category}」`);
+          showHud(taskType === 'review'
+            ? `已生成 ${reviewDates.length} 轮复习计划并自动排入时间轴`
+            : `已添加到「${category}」`);
         }
-      } catch (err) { showHud(err.message, 'var(--red)'); }
+      } catch (err) {
+        showHud(err.message, 'var(--red)');
+      } finally {
+        submitting = false;
+      }
+    });
+  }
+
+  function openReviewNotebookSheet(filterMastery = 'all') {
+    if (!state.data || !state.data.user) return;
+    const p = getPack();
+    const today = todayKey();
+    const allReviews = (state.data.tasks || []).filter((t) => isReviewTask(t));
+    const filtered = filterMastery === 'all'
+      ? allReviews
+      : allReviews.filter((t) => (t.mastery || 'weak') === filterMastery);
+    const weakCount = allReviews.filter((t) => (t.mastery || 'weak') === 'weak').length;
+    const revCount = allReviews.filter((t) => t.mastery === 'reviewing').length;
+    const masCount = allReviews.filter((t) => t.mastery === 'mastered').length;
+
+    openSheet(`
+      <div class="sheet-header">
+        <h2 class="sheet-title">${esc(p.reviewNotebook)}</h2>
+        ${sheetCloseBtn()}
+      </div>
+      <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;line-height:1.5;">
+        集中管理所有错题与复习计划，系统按遗忘曲线自动排入时间轴，随时点击状态徽章更新掌握进度。
+      </p>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:14px;">
+        <div class="segmented-control" style="overflow-x:auto;">
+          <button type="button" class="seg-btn ${filterMastery === 'all' ? 'is-active' : ''}" data-nb-filter="all">全部 (${allReviews.length})</button>
+          <button type="button" class="seg-btn ${filterMastery === 'weak' ? 'is-active' : ''}" data-nb-filter="weak">未掌握 (${weakCount})</button>
+          <button type="button" class="seg-btn ${filterMastery === 'reviewing' ? 'is-active' : ''}" data-nb-filter="reviewing">待巩固 (${revCount})</button>
+          <button type="button" class="seg-btn ${filterMastery === 'mastered' ? 'is-active' : ''}" data-nb-filter="mastered">已掌握 (${masCount})</button>
+        </div>
+      </div>
+
+      ${filtered.length ? filtered.map((t) => {
+        const m = MASTERY_LEVELS[t.mastery] || MASTERY_LEVELS.weak;
+        const dates = Array.isArray(t.reviewDates) && t.reviewDates.length ? t.reviewDates : [t.date];
+        const doneSet = new Set(t.completedDates || []);
+        const doneRounds = dates.filter((d) => doneSet.has(d)).length;
+        const nextDate = dates.find((d) => d >= today && !doneSet.has(d)) || dates[dates.length - 1];
+        const inToday = dates.includes(today);
+        return `
+          <div class="notebook-card">
+            <div class="notebook-card-top">
+              <div style="min-width:0;flex:1;">
+                <div style="font-size:11px;font-weight:600;color:var(--accent);margin-bottom:2px;">${esc(t.category)}</div>
+                <div style="font-size:15px;font-weight:600;line-height:1.35;">${esc(t.title)}</div>
+                ${t.mistakeNote ? `<div class="task-mistake-note">${esc(t.mistakeNote)}</div>` : ''}
+              </div>
+              <button type="button" class="mastery-pill ${m.cls}" data-nb-cycle="${t.id}">${m.label}</button>
+            </div>
+            <div class="review-schedule-preview">
+              ${dates.map((d, i) => `
+                <span class="review-date-chip ${doneSet.has(d) ? 'is-done' : ''}">R${i + 1} ${formatShortMD(d)}${doneSet.has(d) ? '✓' : ''}</span>
+              `).join('')}
+            </div>
+            <div class="notebook-card-actions">
+              <span style="font-size:11px;color:var(--text-secondary);" class="tabular">已完成 ${doneRounds}/${dates.length} 轮 · 下次 ${formatShortMD(nextDate)}</span>
+              <div style="display:flex;align-items:center;gap:8px;">
+                ${!inToday ? `<button type="button" class="btn-secondary btn-sm" style="padding:5px 10px;font-size:12px;color:var(--orange);" data-nb-today="${t.id}">今日加练</button>` : ''}
+                <button type="button" class="btn-secondary btn-sm" style="padding:5px 10px;font-size:12px;" data-nb-edit="${t.id}">编辑</button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('') : `
+        <div class="empty-box" style="padding:24px 12px;">
+          <div style="font-size:14px;font-weight:600;color:var(--text-primary);">${allReviews.length ? '当前筛选下暂无错题' : `还没有录入${esc(p.reviewLabel)}`}</div>
+          <p style="font-size:12px;margin:6px 0 14px;">录入一道错题或薄弱知识点，系统会自动按艾宾浩斯曲线排入未来时间轴。</p>
+        </div>
+      `}
+
+      <button type="button" class="btn-primary btn-block" id="btn-nb-add-review" style="margin-top:8px;">${esc(p.addReviewBtn)}计划</button>
+    `);
+
+    sheetContent.querySelectorAll('[data-nb-filter]').forEach((btn) => {
+      btn.addEventListener('click', () => openReviewNotebookSheet(btn.dataset.nbFilter));
+    });
+
+    sheetContent.querySelectorAll('[data-nb-cycle]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const t = state.data.tasks.find((x) => x.id === btn.dataset.nbCycle);
+        if (!t) return;
+        const cur = MASTERY_LEVELS[t.mastery] || MASTERY_LEVELS.weak;
+        const next = MASTERY_LEVELS[cur.next];
+        try {
+          await api(`/api/tasks/${t.id}`, { method: 'PATCH', body: JSON.stringify({ mastery: next.id }) });
+          await loadBootstrap(true);
+          openReviewNotebookSheet(filterMastery);
+          showHud(`已标记为「${next.label}」`);
+        } catch (err) { showHud(err.message, 'var(--red)'); }
+      });
+    });
+
+    sheetContent.querySelectorAll('[data-nb-today]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const t = state.data.tasks.find((x) => x.id === btn.dataset.nbToday);
+        if (!t) return;
+        const nextDates = Array.from(new Set([...(t.reviewDates || [t.date]), today])).sort();
+        try {
+          await api(`/api/tasks/${t.id}`, { method: 'PATCH', body: JSON.stringify({ reviewDates: nextDates }) });
+          await loadBootstrap(true);
+          openReviewNotebookSheet(filterMastery);
+          showHud('已加入今日复习队列');
+        } catch (err) { showHud(err.message, 'var(--red)'); }
+      });
+    });
+
+    sheetContent.querySelectorAll('[data-nb-edit]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const t = state.data.tasks.find((x) => x.id === btn.dataset.nbEdit);
+        if (t) openTaskEditorSheet(t);
+      });
+    });
+
+    document.getElementById('btn-nb-add-review').addEventListener('click', () => {
+      openTaskEditorSheet(null, '', 'review');
     });
   }
 
@@ -2958,12 +3477,12 @@ Script.complete();`;
     openSheet(`
       <div class="sheet-header">
         <h2 class="sheet-title">${isEdit ? '编辑目标倒计时' : '设定考试 / 目标倒计时'}</h2>
-        <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
+        ${sheetCloseBtn()}
       </div>
       <form id="form-exam-editor">
         <div class="field">
           <label class="field-label" for="input-exam-name">考试或目标名称</label>
-          <input id="input-exam-name" class="input" type="text" required maxlength="30" placeholder="例如：2027 全国考研初试" value="${esc(isEdit ? existingExam.name : '')}" autofocus />
+          <input id="input-exam-name" class="input" type="text" required maxlength="30" placeholder="例如：2027 全国考研初试" value="${esc(isEdit ? existingExam.name : '')}" />
         </div>
         <div class="field">
           <label class="field-label" for="input-exam-date">目标日期</label>
@@ -2994,6 +3513,7 @@ Script.complete();`;
 
     document.getElementById('form-exam-editor').addEventListener('submit', async (e) => {
       e.preventDefault();
+      blurActiveInput();
       const name = document.getElementById('input-exam-name').value.trim();
       const targetDate = document.getElementById('input-exam-date').value;
       const tag = document.getElementById('input-exam-tag').value.trim() || '核心目标';
@@ -3023,12 +3543,12 @@ Script.complete();`;
     openSheet(`
       <div class="sheet-header">
         <h2 class="sheet-title">创建学习小组</h2>
-        <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
+        ${sheetCloseBtn()}
       </div>
       <form id="form-create-group">
         <div class="field">
           <label class="field-label" for="input-group-name">小组名称</label>
-          <input id="input-group-name" class="input" type="text" required maxlength="24" placeholder="例如：考研每日打卡小组" autofocus />
+          <input id="input-group-name" class="input" type="text" required maxlength="24" placeholder="例如：考研每日打卡小组" />
         </div>
         <div class="field">
           <label class="field-label" for="input-group-exam">共同备考目标</label>
@@ -3048,6 +3568,7 @@ Script.complete();`;
 
     document.getElementById('form-create-group').addEventListener('submit', async (e) => {
       e.preventDefault();
+      blurActiveInput();
       const name = document.getElementById('input-group-name').value.trim();
       const examName = document.getElementById('input-group-exam').value.trim();
       const targetDate = document.getElementById('input-group-date').value;
@@ -3067,7 +3588,7 @@ Script.complete();`;
     openSheet(`
       <div class="sheet-header">
         <h2 class="sheet-title">加入学习小组</h2>
-        <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
+        ${sheetCloseBtn()}
       </div>
       <form id="form-join-group">
         ${sharedGroup ? `
@@ -3079,7 +3600,7 @@ Script.complete();`;
         ` : ''}
         <div class="field">
           <label class="field-label" for="input-join-code">输入 6 位小组邀请码</label>
-          <input id="input-join-code" class="input tabular" style="text-transform:uppercase;letter-spacing:0.12em;font-weight:700;" type="text" required maxlength="8" placeholder="输入 6 位邀请码" value="${esc(prefillCode)}" autofocus />
+          <input id="input-join-code" class="input tabular" style="text-transform:uppercase;letter-spacing:0.12em;font-weight:700;" type="text" required maxlength="8" placeholder="输入 6 位邀请码" value="${esc(prefillCode)}" />
         </div>
         <button type="submit" class="btn-primary btn-block">立即加入小组</button>
       </form>
@@ -3087,6 +3608,7 @@ Script.complete();`;
 
     document.getElementById('form-join-group').addEventListener('submit', async (e) => {
       e.preventDefault();
+      blurActiveInput();
       const inviteCode = document.getElementById('input-join-code').value.trim().toUpperCase();
       if (!inviteCode) return;
       closeSheet();
@@ -3142,7 +3664,7 @@ Script.complete();`;
     openSheet(`
       <div class="sheet-header">
         <h2 class="sheet-title">${esc(p.focusSheetTitle)}</h2>
-        <button class="sheet-close" data-action="close-sheet" aria-label="关闭">×</button>
+        ${sheetCloseBtn()}
       </div>
       <div class="focus-dial-wrap">
         <div class="ring-box" style="margin:6px 0 14px;">
@@ -3504,7 +4026,7 @@ Script.complete();`;
   fabAdd.addEventListener('click', () => {
     if (!state.data || !state.data.user) return;
     if (state.activeTab === 'exams') openExamEditorSheet(null);
-    else openTaskEditorSheet(null);
+    else openTaskEditorSheet(null, '', state.taskFilter === 'review' ? 'review' : 'normal');
   });
 
   let syncDebounceTimer = null;
@@ -3518,10 +4040,12 @@ Script.complete();`;
     if (!btn) return;
     const action = btn.dataset.action;
 
-    if (action === 'close-sheet') return closeSheet();
+    if (action === 'close-sheet') { e.preventDefault(); e.stopPropagation(); return closeSheet(); }
     if (action === 'open-style-packs') return openStylePackSheet();
-    if (action === 'open-add-task') return openTaskEditorSheet(null);
-    if (action === 'open-add-task-in-cat') return openTaskEditorSheet(null, btn.dataset.category || '');
+    if (action === 'open-add-task') return openTaskEditorSheet(null, '', 'normal');
+    if (action === 'open-add-review') return openTaskEditorSheet(null, '', 'review');
+    if (action === 'open-review-notebook') return openReviewNotebookSheet('all');
+    if (action === 'open-add-task-in-cat') return openTaskEditorSheet(null, btn.dataset.category || '', state.taskFilter === 'review' ? 'review' : 'normal');
     if (action === 'open-manage-categories') return openManageCategoriesSheet();
     if (action === 'open-add-exam') return openExamEditorSheet(null);
     if (action === 'open-create-group') return openCreateGroupSheet();
@@ -3529,6 +4053,36 @@ Script.complete();`;
     if (action === 'open-focus') return openFocusSheet();
     if (action === 'open-analytics') return openAnalyticsSheet();
     if (action === 'trigger-import-backup') { importBackupInput.click(); return; }
+
+    if (action === 'set-task-filter') {
+      const next = btn.dataset.filter || 'all';
+      if (state.taskFilter !== next) {
+        state.taskFilter = next;
+        renderView(false);
+      }
+      return;
+    }
+
+    if (action === 'cycle-mastery') {
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      const task = state.data.tasks.find((x) => x.id === id);
+      if (!task) return;
+      const cur = MASTERY_LEVELS[task.mastery] || MASTERY_LEVELS.weak;
+      const next = MASTERY_LEVELS[cur.next];
+      task.mastery = next.id;
+      btn.className = `mastery-pill ${next.cls}`;
+      btn.textContent = next.label;
+      showHud(`掌握度已更新为「${next.label}」`, next.id === 'mastered' ? 'var(--green)' : (next.id === 'reviewing' ? 'var(--orange)' : 'var(--red)'));
+      try {
+        await api(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify({ mastery: next.id }) });
+        scheduleQuietSync(260);
+      } catch (err) {
+        showHud(err.message, 'var(--red)');
+        await loadBootstrap(true);
+      }
+      return;
+    }
 
     if (action === 'edit-task') {
       const t = state.data.tasks.find((x) => x.id === btn.dataset.id);
@@ -3576,6 +4130,7 @@ Script.complete();`;
     }
 
     if (action === 'toggle-task') {
+      e.stopPropagation();
       const id = btn.dataset.id;
       const task = state.data.tasks.find((t) => t.id === id);
       if (!task) return;
@@ -3608,6 +4163,8 @@ Script.complete();`;
     }
 
     if (action === 'delete-task') {
+      e.preventDefault();
+      e.stopPropagation();
       const targetTask = state.data.tasks.find((t) => t.id === btn.dataset.id);
       const snapshotCopy = targetTask ? JSON.parse(JSON.stringify(targetTask)) : null;
       try {
