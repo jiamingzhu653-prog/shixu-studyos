@@ -1,4 +1,4 @@
-const CACHE_NAME = 'shixu-shell-v8';
+const CACHE_NAME = 'shixu-shell-v9';
 const SHELL_ASSETS = [
   './',
   './index.html',

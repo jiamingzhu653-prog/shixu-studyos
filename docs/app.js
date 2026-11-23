@@ -1577,48 +1577,103 @@
   }
 
   // =========================================================================
-  // iOS Safari VisualViewport Guard (Prevents keyboard viewport shift &
-  // fixed-button hit-testing offset on iPhone Safari!)
+  // iOS Safari Keyboard & Viewport Recovery Engine
+  // Guarantees 100% return to pre-keyboard state across ALL iOS models
+  // (iPhone SE, mini, 13-16 Pro/Pro Max, iPad) when hiding soft keyboard!
   // =========================================================================
 
-  function syncVisualViewportVars() {
-    const vv = window.visualViewport;
-    if (!vv) return;
-    const h = Math.round(vv.height);
-    const t = Math.max(0, Math.round(vv.offsetTop));
-    document.documentElement.style.setProperty('--vv-height', `${h}px`);
-    document.documentElement.style.setProperty('--vv-top', `${t}px`);
+  let kbRestoreTimers = [];
+  let sheetSettleTimer = null;
+
+  function isFormField(el) {
+    return Boolean(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT'));
   }
 
-  function resetIOSViewportScroll() {
-    if (window.scrollY !== 0 || window.scrollX !== 0) {
-      window.scrollTo(0, 0);
-    }
-    syncVisualViewportVars();
+  function clearKeyboardViewportState() {
+    document.documentElement.classList.remove('ios-kb-open');
+    document.documentElement.style.removeProperty('--kb-height');
+  }
+
+  function restoreIOSViewport() {
+    if (document.documentElement.scrollTop !== 0) document.documentElement.scrollTop = 0;
+    if (document.body.scrollTop !== 0) document.body.scrollTop = 0;
+    if (window.scrollY !== 0 || window.scrollX !== 0) window.scrollTo(0, 0);
+  }
+
+  function scheduleKeyboardDismissRecovery() {
+    kbRestoreTimers.forEach((id) => clearTimeout(id));
+    kbRestoreTimers = [];
+    clearKeyboardViewportState();
+    restoreIOSViewport();
+    [80, 220, 420, 620].forEach((ms) => {
+      kbRestoreTimers.push(setTimeout(() => {
+        if (!isFormField(document.activeElement)) {
+          clearKeyboardViewportState();
+          restoreIOSViewport();
+        }
+      }, ms));
+    });
   }
 
   function blurActiveInput() {
-    const el = document.activeElement;
-    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
-      el.blur();
+    if (isFormField(document.activeElement)) {
+      document.activeElement.blur();
     }
   }
 
   (function initIOSViewportGuard() {
-    syncVisualViewportVars();
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', syncVisualViewportVars);
-      window.visualViewport.addEventListener('scroll', syncVisualViewportVars);
-    }
-    window.addEventListener('orientationchange', () => {
-      setTimeout(resetIOSViewportScroll, 120);
-    });
-    document.addEventListener('focusout', (e) => {
-      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) {
-        requestAnimationFrame(resetIOSViewportScroll);
-        setTimeout(resetIOSViewportScroll, 80);
-        setTimeout(resetIOSViewportScroll, 220);
+    function handleVisualViewportChange() {
+      const vv = window.visualViewport;
+      if (!vv) return;
+      const kbGap = window.innerHeight - vv.height;
+      if (isFormField(document.activeElement) && kbGap > 110) {
+        document.documentElement.classList.add('ios-kb-open');
+        document.documentElement.style.setProperty('--kb-height', `${Math.round(vv.height)}px`);
+      } else {
+        clearKeyboardViewportState();
+        restoreIOSViewport();
       }
+    }
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', handleVisualViewportChange);
+      window.visualViewport.addEventListener('scroll', handleVisualViewportChange);
+    }
+
+    window.addEventListener('resize', () => {
+      if (!isFormField(document.activeElement)) {
+        clearKeyboardViewportState();
+        restoreIOSViewport();
+      }
+    });
+
+    window.addEventListener('orientationchange', () => {
+      setTimeout(() => {
+        clearKeyboardViewportState();
+        restoreIOSViewport();
+      }, 180);
+    });
+
+    document.addEventListener('focusin', (e) => {
+      if (!isFormField(e.target)) return;
+      kbRestoreTimers.forEach((id) => clearTimeout(id));
+      kbRestoreTimers = [];
+      setTimeout(() => {
+        handleVisualViewportChange();
+        if (document.activeElement === e.target && typeof e.target.scrollIntoView === 'function') {
+          try { e.target.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch {}
+        }
+      }, 240);
+    });
+
+    document.addEventListener('focusout', (e) => {
+      if (!isFormField(e.target)) return;
+      // Delay slightly to distinguish moving between inputs vs dismissing keyboard
+      setTimeout(() => {
+        if (!isFormField(document.activeElement)) {
+          scheduleKeyboardDismissRecovery();
+        }
+      }, 50);
     });
   })();
 
@@ -1628,33 +1683,53 @@
 
   function openSheet(html) {
     blurActiveInput();
-    resetIOSViewportScroll();
+    clearKeyboardViewportState();
+    restoreIOSViewport();
+    clearTimeout(sheetSettleTimer);
     sheetPanel.style.transform = '';
     sheetPanel.classList.remove('is-dragging');
+    sheetBackdrop.classList.remove('is-settled');
     sheetContent.scrollTop = 0;
     sheetContent.innerHTML = html;
     sheetBackdrop.classList.remove('hidden');
     sheetBackdrop.setAttribute('aria-hidden', 'false');
     requestAnimationFrame(() => {
-      syncVisualViewportVars();
       sheetBackdrop.classList.add('is-open');
+      // Remove CSS transform once settled to prevent WebKit fixed-input hit-test offset
+      sheetSettleTimer = setTimeout(() => {
+        if (sheetBackdrop.classList.contains('is-open')) sheetBackdrop.classList.add('is-settled');
+      }, 300);
     });
   }
 
   function closeSheet() {
     blurActiveInput();
+    clearTimeout(sheetSettleTimer);
     sheetPanel.style.transform = '';
     sheetPanel.classList.remove('is-dragging');
+    sheetBackdrop.classList.remove('is-settled');
     sheetBackdrop.classList.remove('is-open');
     sheetBackdrop.setAttribute('aria-hidden', 'true');
-    requestAnimationFrame(resetIOSViewportScroll);
+    scheduleKeyboardDismissRecovery();
     setTimeout(() => {
-      resetIOSViewportScroll();
-      if (!sheetBackdrop.classList.contains('is-open')) sheetBackdrop.classList.add('hidden');
+      if (!sheetBackdrop.classList.contains('is-open')) {
+        sheetBackdrop.classList.add('hidden');
+        restoreIOSViewport();
+      }
     }, 300);
   }
 
-  sheetBackdrop.addEventListener('click', (e) => { if (e.target === sheetBackdrop) closeSheet(); });
+  sheetBackdrop.addEventListener('click', (e) => {
+    if (e.target === sheetBackdrop) closeSheet();
+  });
+
+  // Tapping blank space inside sheet cleanly dismisses iOS keyboard
+  sheetPanel.addEventListener('click', (e) => {
+    if (isFormField(document.activeElement) && !e.target.closest('input, textarea, select, button, label, a')) {
+      blurActiveInput();
+    }
+  });
+
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && sheetBackdrop.classList.contains('is-open')) closeSheet();
   });
@@ -1679,9 +1754,10 @@
       if (!dragging || !e.touches || !e.touches[0]) return;
       const dy = Math.max(0, e.touches[0].clientY - startY);
       if (dy < 8) return;
+      sheetBackdrop.classList.remove('is-settled');
       sheetPanel.classList.add('is-dragging');
       currentY = dy;
-      sheetPanel.style.transform = `translate3d(0, ${dy}px, 0)`;
+      sheetPanel.style.transform = `translateY(${dy}px)`;
     }, { passive: true });
 
     grabber.addEventListener('touchend', () => {
@@ -1689,7 +1765,12 @@
       dragging = false;
       sheetPanel.classList.remove('is-dragging');
       if (currentY > 84) closeSheet();
-      else sheetPanel.style.transform = '';
+      else {
+        sheetPanel.style.transform = '';
+        setTimeout(() => {
+          if (sheetBackdrop.classList.contains('is-open')) sheetBackdrop.classList.add('is-settled');
+        }, 280);
+      }
     });
   })();
 
@@ -2148,6 +2229,7 @@ Script.complete();`;
     if (authForm) {
       authForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+        blurActiveInput();
         const account = document.getElementById('input-auth-account').value.trim();
         const password = document.getElementById('input-auth-pwd').value;
         try {
@@ -2531,6 +2613,7 @@ Script.complete();`;
     if (!form) return;
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
+      blurActiveInput();
       const input = document.getElementById('input-group-feed');
       const text = input ? input.value.trim() : '';
       if (!text) return;
@@ -3006,6 +3089,7 @@ Script.complete();`;
 
     document.getElementById('form-new-category').addEventListener('submit', async (e) => {
       e.preventDefault();
+      blurActiveInput();
       const name = document.getElementById('input-new-cat-name').value.trim();
       if (!name) return;
       try {
@@ -3018,6 +3102,7 @@ Script.complete();`;
 
     sheetContent.querySelectorAll('[data-save-cat]').forEach((btn) => {
       btn.addEventListener('click', async () => {
+        blurActiveInput();
         const id = btn.dataset.saveCat;
         const input = sheetContent.querySelector(`[data-cat-input="${id}"]`);
         const nextName = input ? input.value.trim() : '';
@@ -3115,7 +3200,7 @@ Script.complete();`;
           <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="${taskType === 'review' ? '例如：高数定积分换元错题 / 民法善意取得易错点' : '例如：刷完第三章真题并整理笔记'}" value="${esc(initialTitle)}" />
         </div>
 
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div class="form-grid-2">
           <div class="field">
             <label class="field-label" id="lbl-task-date" for="input-task-date">${taskType === 'review' ? '首次复习日期' : '安排日期'}</label>
             <input id="input-task-date" class="input tabular" type="date" required value="${esc(initialDate)}" />

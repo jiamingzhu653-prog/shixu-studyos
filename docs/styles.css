@@ -46,13 +46,15 @@
   --dur-base: 300ms;
   --dur-slow: 520ms;
 
-  /* Radii & Safe Areas */
+  /* Radii & Safe Areas (All iOS Models: SE, mini, Pro, Pro Max, Landscape & iPad) */
   --radius-sm: 10px;
   --radius-md: 16px;
   --radius-lg: 22px;
   --radius-pill: 999px;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
 }
 
 html[data-theme="dark"] {
@@ -92,8 +94,6 @@ html[data-theme="dark"] {
 }
 
 html, body {
-  position: fixed;
-  inset: 0;
   margin: 0;
   padding: 0;
   width: 100%;
@@ -104,6 +104,7 @@ html, body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  -webkit-text-size-adjust: 100%;
   overflow: hidden;
   overscroll-behavior: none;
 }
@@ -134,14 +135,15 @@ button svg {
 }
 
 /* ==========================================================================
-   App Shell (Edge-to-edge on iPhone, Centered Apple Canvas on Desktop)
+   App Shell (Edge-to-edge on ALL iPhones SE → 16 Pro Max, Centered on iPad)
    ========================================================================== */
 
 .app-shell {
-  position: relative;
+  position: fixed;
+  inset: 0;
   width: 100%;
   height: 100%;
-  max-width: 480px;
+  max-width: 520px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -149,8 +151,8 @@ button svg {
   overflow: hidden;
 }
 
-@media (min-width: 640px) {
-  body {
+@media (min-width: 600px) {
+  html, body {
     background: var(--bg-page-outer);
   }
   .app-shell {
@@ -232,7 +234,7 @@ html[data-theme="dark"] .hud-pill {
 
 .top-nav-inner {
   height: 52px;
-  padding: 0 18px;
+  padding: 0 max(18px, var(--safe-right)) 0 max(18px, var(--safe-left));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -332,7 +334,7 @@ html[data-theme="dark"] .hud-pill {
 }
 
 .view-container {
-  padding: 2px 18px 24px;
+  padding: 2px max(18px, var(--safe-right)) 24px max(18px, var(--safe-left));
   animation: appleViewEnter 340ms var(--ease-apple) both;
 }
 
@@ -378,8 +380,10 @@ html[data-theme="dark"] .hud-pill {
 
 .section-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 6px 10px;
   margin: 22px 2px 10px;
 }
 
@@ -395,6 +399,7 @@ html[data-theme="dark"] .hud-pill {
   font-size: 13px;
   font-weight: 500;
   color: var(--accent);
+  white-space: nowrap;
 }
 
 .card {
@@ -1344,7 +1349,7 @@ textarea.input {
 
 .fab-add {
   position: absolute;
-  right: 18px;
+  right: max(18px, var(--safe-right));
   bottom: calc(74px + var(--safe-bottom));
   z-index: 45;
   width: 52px;
@@ -1377,7 +1382,7 @@ textarea.input {
   z-index: 50;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  padding: 8px 8px calc(8px + var(--safe-bottom));
+  padding: 8px max(8px, var(--safe-right)) calc(8px + var(--safe-bottom)) max(8px, var(--safe-left));
   background: var(--bg-frosted);
   backdrop-filter: saturate(180%) blur(24px);
   -webkit-backdrop-filter: saturate(180%) blur(24px);
@@ -1420,14 +1425,12 @@ textarea.input {
 
 /* ==========================================================================
    iOS Bottom Sheet Modal (UISheetPresentationController)
+   Zero transform after settle to eliminate WebKit input hit-testing offset!
    ========================================================================== */
 
 .sheet-backdrop {
   position: fixed;
-  left: 0;
-  right: 0;
-  top: var(--vv-top, 0px);
-  height: var(--vv-height, 100%);
+  inset: 0;
   z-index: 100;
   background: rgba(0, 0, 0, 0.36);
   backdrop-filter: blur(6px);
@@ -1436,31 +1439,43 @@ textarea.input {
   align-items: flex-end;
   justify-content: center;
   opacity: 0;
+  pointer-events: none;
   overscroll-behavior: contain;
-  transition: opacity 240ms var(--ease-apple);
+  transition: opacity 220ms var(--ease-apple);
 }
 
 .sheet-backdrop.is-open {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .sheet-panel {
   width: 100%;
-  max-width: 480px;
-  max-height: calc(var(--vv-height, 100dvh) - 24px);
+  max-width: 520px;
+  max-height: 88%;
   background: var(--bg-sheet);
   border-radius: 26px 26px 0 0;
   box-shadow: var(--shadow-elevated);
   display: flex;
   flex-direction: column;
-  transform: translate3d(0, 100%, 0);
-  transition: transform 320ms var(--ease-apple);
+  transform: translateY(100%);
+  transition: transform 280ms var(--ease-apple);
   padding-bottom: calc(16px + var(--safe-bottom));
   overflow: hidden;
 }
 
 .sheet-backdrop.is-open .sheet-panel {
-  transform: translate3d(0, 0, 0);
+  transform: translateY(0);
+}
+
+.sheet-backdrop.is-open.is-settled .sheet-panel {
+  transform: none;
+}
+
+/* Only constrain sheet height while iOS soft keyboard is genuinely open */
+html.ios-kb-open .sheet-panel {
+  max-height: calc(var(--kb-height, 100%) - 14px);
+  padding-bottom: 12px;
 }
 
 .sheet-grabber-wrap {
@@ -1478,7 +1493,7 @@ textarea.input {
 }
 
 .sheet-content {
-  padding: 6px 20px 18px;
+  padding: 6px max(20px, var(--safe-right)) 20px max(20px, var(--safe-left));
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
@@ -2676,4 +2691,92 @@ html[data-style="xianxia"] .hud-pill {
   padding-top: 8px;
   border-top: 1px solid var(--border-separator);
 }
+
+/* Safe 2-Column Form Grid (Prevents iOS Safari native <input type="date"> horizontal overflow on 375px iPhone SE/mini) */
+.form-grid-2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1.28fr) minmax(0, 0.72fr);
+  gap: 10px;
+}
+
+.form-grid-2 > .field {
+  min-width: 0;
+}
+
+input[type="date"].input {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* ==========================================================================
+   All-iOS Multi-Device Adaptive Rules
+   - iPhone SE (2nd/3rd gen) / iPhone 8 / iPhone 12-13 mini (width <= 390px)
+   - Compact-height iPhones & Landscape Mode (height <= 700px)
+   - iPhone 14/15/16 Pro & Pro Max (393px - 440px edge-to-edge)
+   - iPad Portrait / Split View / Landscape (>= 600px)
+   ========================================================================== */
+
+@media (max-width: 390px) {
+  .top-nav-inner {
+    padding: 0 max(14px, var(--safe-right)) 0 max(14px, var(--safe-left));
+  }
+  .view-container {
+    padding: 2px max(14px, var(--safe-right)) 24px max(14px, var(--safe-left));
+  }
+  .page-title {
+    font-size: 28px;
+  }
+  .hero-countdown {
+    padding: 17px 18px 18px;
+  }
+  .hero-days-num {
+    font-size: 46px;
+  }
+  .summary-strip {
+    gap: 10px;
+  }
+  .summary-tile {
+    padding: 13px 12px;
+  }
+  .summary-value {
+    font-size: 22px;
+  }
+  .task-filter-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .task-filter-bar .seg-btn {
+    padding: 5px 9px;
+    font-size: 11px;
+  }
+  .review-notebook-btn {
+    padding: 5px 10px;
+    font-size: 11px;
+  }
+  .timeline-rail {
+    gap: 4px;
+  }
+  .sheet-content {
+    padding: 6px max(16px, var(--safe-right)) 20px max(16px, var(--safe-left));
+  }
+}
+
+@media (max-height: 700px) {
+  .top-nav-inner {
+    height: 46px;
+  }
+  .page-header {
+    margin-bottom: 12px;
+  }
+  .hero-countdown {
+    padding: 15px 18px 16px;
+  }
+  .sheet-panel {
+    max-height: 92%;
+  }
+  .sheet-header {
+    margin-bottom: 12px;
+  }
+}
+
 
