@@ -21,6 +21,7 @@
   const WEEKDAYS_SHORT = ['日', '一', '二', '三', '四', '五', '六'];
   const TAB_TITLES = {
     today: '学习序列',
+    mistakes: '错题本',
     groups: '学习小组',
     exams: '目标倒计时',
     desktop: 'iOS 桌面与组件'
@@ -110,7 +111,7 @@
       lightMeta: '#F5F5F7',
       darkMeta: '#000000',
       authTitle: '时序 · 统一学习账户',
-      tabs: { today: '今日', groups: '小组', exams: '倒计时', desktop: '桌面' },
+      tabs: { today: '今日', mistakes: '错题本', groups: '小组', exams: '倒计时', desktop: '桌面' },
       dayTitles: { today: '今日学习', yesterday: '昨日复盘', tomorrow: '明日计划', customSuffix: '任务' },
       countdownEmptyTitle: '尚未设定考试或目标倒计时',
       countdownEmptyDesc: '设定考试或目标日期，首页与锁屏自动倒数。',
@@ -171,7 +172,7 @@
       lightMeta: '#FFF5F8',
       darkMeta: '#160D12',
       authTitle: '时序 · 凯蒂甜心自习室',
-      tabs: { today: '今日', groups: '搭子', exams: '心愿', desktop: '装扮' },
+      tabs: { today: '今日', mistakes: '错题本', groups: '搭子', exams: '心愿', desktop: '装扮' },
       dayTitles: { today: '今日份努力', yesterday: '昨日小复盘', tomorrow: '明日小期待', customSuffix: '小计划' },
       countdownEmptyTitle: '还没有定下心愿倒数日哦',
       countdownEmptyDesc: '设一个期待的考试或闪光日，每天一起倒数变优秀。',
@@ -232,7 +233,7 @@
       lightMeta: '#F6F2E9',
       darkMeta: '#0D1110',
       authTitle: '时序 · 问道修行录',
-      tabs: { today: '修行', groups: '宗门', exams: '渡劫', desktop: '玉简' },
+      tabs: { today: '修行', mistakes: '心魔录', groups: '宗门', exams: '渡劫', desktop: '玉简' },
       dayTitles: { today: '今日修行', yesterday: '昨日悟道', tomorrow: '明日闭关', customSuffix: '功课' },
       countdownEmptyTitle: '尚未立下渡劫飞升之期',
       countdownEmptyDesc: '定下大考飞升之日，玉简与首页日夜警醒道心。',
@@ -293,6 +294,13 @@
       desc: '自动排入当日 +1/+2/+4/+7/+15 天时间轴',
       offsets: [0, 1, 2, 4, 7, 15]
     },
+    ebbinghaus_long: {
+      id: 'ebbinghaus_long',
+      name: '长效强化 7 轮',
+      short: '强化 7 轮',
+      desc: '自动排入当日 +1/+2/+4/+7/+15/+30 天深度巩固',
+      offsets: [0, 1, 2, 4, 7, 15, 30]
+    },
     sprint: {
       id: 'sprint',
       name: '考前高频巩固',
@@ -308,6 +316,8 @@
       offsets: [0]
     }
   };
+
+  const MISTAKE_REASONS = ['概念混淆', '公式遗忘', '计算粗心', '审题遗漏', '思路卡壳', '易混考点'];
 
   const MASTERY_LEVELS = {
     weak: { id: 'weak', label: '未掌握', cls: 'is-weak', next: 'reviewing' },
@@ -339,6 +349,105 @@
       round: idx >= 0 ? idx + 1 : 1,
       total: dates.length
     };
+  }
+
+  // Real Ebbinghaus Forgetting Curve Retention & Priority Engine: R(t) = e^(-t / S)
+  function computeEbbinghausMetrics(task, today = todayKey()) {
+    const dates = Array.isArray(task.reviewDates) && task.reviewDates.length ? task.reviewDates : [task.date || today];
+    const doneSet = new Set(Array.isArray(task.completedDates) ? task.completedDates : []);
+    const doneRounds = dates.filter((d) => doneSet.has(d)).length;
+    const totalRounds = dates.length;
+    const mastery = MASTERY_LEVELS[task.mastery] ? task.mastery : 'weak';
+
+    // Determine overdue / due today / upcoming status
+    const overdueDates = dates.filter((d) => d < today && !doneSet.has(d));
+    const isDueToday = dates.includes(today) && !doneSet.has(today);
+    const nextDate = dates.find((d) => d >= today && !doneSet.has(d)) || dates[dates.length - 1];
+
+    // Days elapsed since last review (or creation)
+    const lastTs = Number(task.lastReviewedAt) || Number(task.createdAt) || Date.now();
+    const hoursElapsed = Math.max(0, (Date.now() - lastTs) / 3600000);
+    const daysElapsed = hoursElapsed / 24;
+
+    // Memory stability S (in days) grows with mastery and completed rounds
+    const baseStability = mastery === 'mastered' ? 22 : (mastery === 'reviewing' ? 5.2 : 1.7);
+    const stability = baseStability + doneRounds * 1.45;
+    const rawR = Math.exp(-daysElapsed / Math.max(1, stability));
+    let retentionPct = Math.round(rawR * 100);
+    if (overdueDates.length > 0 && mastery !== 'mastered') {
+      retentionPct = Math.max(12, retentionPct - Math.min(28, overdueDates.length * 12));
+    }
+    if (isDueToday && mastery === 'weak' && doneRounds === 0) {
+      retentionPct = Math.min(retentionPct, 48);
+    }
+    retentionPct = Math.min(99, Math.max(12, retentionPct));
+
+    let dueStatus = 'upcoming';
+    let dueLabel = `下次 ${formatShortMD(nextDate)}`;
+    let badgeCls = 'is-safe';
+    if (mastery === 'mastered' && !isDueToday && overdueDates.length === 0) {
+      dueStatus = 'mastered';
+      dueLabel = `已牢记 · 留存 ${retentionPct}%`;
+      badgeCls = 'is-safe';
+    } else if (overdueDates.length > 0) {
+      dueStatus = 'overdue';
+      dueLabel = `已逾期 · 留存 ${retentionPct}%`;
+      badgeCls = 'is-urgent';
+    } else if (isDueToday) {
+      dueStatus = 'due';
+      dueLabel = `今日待复 · 留存 ${retentionPct}%`;
+      badgeCls = retentionPct < 55 ? 'is-urgent' : 'is-warn';
+    } else {
+      dueStatus = 'upcoming';
+      dueLabel = `留存 ${retentionPct}% · ${formatShortMD(nextDate)}`;
+      badgeCls = retentionPct < 55 ? 'is-warn' : 'is-safe';
+    }
+
+    // Higher urgencyScore = appears earlier in the Ebbinghaus Auto-Scroll Review Queue
+    let urgencyScore = (100 - retentionPct);
+    if (dueStatus === 'overdue') urgencyScore += 140 + overdueDates.length * 15;
+    else if (dueStatus === 'due') urgencyScore += 110;
+    if (mastery === 'weak') urgencyScore += 55;
+    else if (mastery === 'reviewing') urgencyScore += 22;
+    else urgencyScore -= 35;
+
+    return {
+      retentionPct,
+      dueStatus,
+      dueLabel,
+      badgeCls,
+      urgencyScore,
+      doneRounds,
+      totalRounds,
+      nextDate,
+      isDueNow: dueStatus === 'overdue' || dueStatus === 'due'
+    };
+  }
+
+  function buildEbbinghausReviewQueue(tasks, { scope = 'ebbinghaus', category = 'all' } = {}) {
+    const today = todayKey();
+    let list = (tasks || []).filter((t) => isReviewTask(t));
+    if (category && category !== 'all') {
+      list = list.filter((t) => (t.category || '未分组') === category);
+    }
+    const enriched = list.map((t) => ({ task: t, metrics: computeEbbinghausMetrics(t, today) }));
+
+    let filtered = enriched;
+    if (scope === 'due') {
+      filtered = enriched.filter((x) => x.metrics.isDueNow);
+    } else if (scope === 'weak') {
+      filtered = enriched.filter((x) => (x.task.mastery || 'weak') !== 'mastered');
+    } else if (scope === 'ebbinghaus') {
+      // Prioritize unmastered or due items; fall back to all if everything is mastered
+      const active = enriched.filter((x) => x.metrics.isDueNow || (x.task.mastery || 'weak') !== 'mastered');
+      filtered = active.length ? active : enriched;
+    }
+
+    filtered.sort((a, b) => {
+      if (b.metrics.urgencyScore !== a.metrics.urgencyScore) return b.metrics.urgencyScore - a.metrics.urgencyScore;
+      return (b.task.createdAt || 0) - (a.task.createdAt || 0);
+    });
+    return filtered;
   }
 
   function formatShortMD(dateStr) {
@@ -405,12 +514,18 @@
 
   const state = {
     mode: 'auto', // 'server' | 'supabase' | 'local'
+    isOnline: typeof navigator !== 'undefined' ? navigator.onLine !== false : true,
+    offlineReady: false,
     userId: '',
     authMode: 'login',
     stylePack: STYLE_PACKS[safeStorageGet('shixu_style_pack')] ? safeStorageGet('shixu_style_pack') : 'apple',
     theme: safeStorageGet('shixu_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
     activeTab: 'today',
     taskFilter: 'all', // 'all' | 'review' | 'todo'
+    mistakeFilter: 'all', // 'all' | 'due' | 'weak' | 'reviewing' | 'mastered'
+    mistakeSubject: 'all',
+    mistakeSearch: '',
+    lastMistakeCategory: safeStorageGet('shixu_last_mistake_cat') || '',
     collapsedCategories: loadCollapsedCategories(),
     selectedDate: todayKey(),
     viewMonth: currentMonthKey(),
@@ -421,6 +536,22 @@
     data: null,
     scriptableCode: '',
     lastSyncedAt: null,
+    autoReview: {
+      active: false,
+      mode: 'card', // 'card' | 'stream'
+      scope: 'ebbinghaus', // 'ebbinghaus' | 'due' | 'weak' | 'all'
+      speed: 'normal', // 'slow' (8s/24pxs) | 'normal' (5s/40pxs) | 'fast' (3s/64pxs)
+      playing: true,
+      autoReveal: true,
+      loop: true,
+      index: 0,
+      revealed: false,
+      elapsedMs: 0,
+      rafId: null,
+      lastTickTs: 0,
+      scrollCarry: 0,
+      queueIds: []
+    },
     focus: {
       presetMin: 25,
       remainingSec: 25 * 60,
@@ -1245,8 +1376,11 @@
         taskType: isReview ? 'review' : 'normal',
         reviewPreset: isReview ? String(body.reviewPreset || 'ebbinghaus').slice(0, 20) : '',
         reviewDates: isReview ? (cleanReviewDates.length ? cleanReviewDates : [taskDate]) : [],
-        mistakeNote: isReview ? String(body.mistakeNote || '').trim().slice(0, 120) : '',
+        mistakeNote: isReview ? String(body.mistakeNote || '').trim().slice(0, 400) : '',
+        mistakeReason: isReview ? String(body.mistakeReason || '').trim().slice(0, 24) : '',
         mastery: isReview && MASTERY_LEVELS[body.mastery] ? body.mastery : (isReview ? 'weak' : ''),
+        reviewCount: isReview ? Math.max(0, Number(body.reviewCount) || 0) : 0,
+        lastReviewedAt: isReview ? (Number(body.lastReviewedAt) || Date.now()) : 0,
         durationMin: Math.min(360, Math.max(5, Number(body.durationMin) || 30)),
         repeatDaily: isReview ? false : Boolean(body.repeatDaily),
         date: taskDate,
@@ -1281,6 +1415,7 @@
           task.reviewDates = [];
           task.reviewPreset = '';
           task.mistakeNote = '';
+          task.mistakeReason = '';
           task.mastery = '';
         } else {
           task.repeatDaily = false;
@@ -1290,8 +1425,15 @@
       if (Array.isArray(body.reviewDates)) {
         task.reviewDates = Array.from(new Set(body.reviewDates.filter((d) => isValidDateISO(d)))).sort();
       }
-      if (typeof body.mistakeNote === 'string') task.mistakeNote = body.mistakeNote.trim().slice(0, 120);
+      if (typeof body.mistakeNote === 'string') task.mistakeNote = body.mistakeNote.trim().slice(0, 400);
+      if (typeof body.mistakeReason === 'string') task.mistakeReason = body.mistakeReason.trim().slice(0, 24);
       if (body.mastery === '' || MASTERY_LEVELS[body.mastery]) task.mastery = body.mastery;
+      if (typeof body.reviewCount === 'number' && body.reviewCount >= 0) task.reviewCount = Math.round(body.reviewCount);
+      if (typeof body.lastReviewedAt === 'number' && body.lastReviewedAt > 0) task.lastReviewedAt = body.lastReviewedAt;
+      if (body.bumpReview === true) {
+        task.reviewCount = (Number(task.reviewCount) || 0) + 1;
+        task.lastReviewedAt = Date.now();
+      }
 
       const targetDate = isValidDateISO(body.date) ? body.date : today;
       if (!Array.isArray(task.completedDates)) task.completedDates = [];
@@ -1534,7 +1676,7 @@
     syncThemeMeta();
 
     const p = getPack();
-    const tabMap = { today: 'tab-btn-today', groups: 'tab-btn-groups', exams: 'tab-btn-exams', desktop: 'tab-btn-desktop' };
+    const tabMap = { today: 'tab-btn-today', mistakes: 'tab-btn-mistakes', groups: 'tab-btn-groups', exams: 'tab-btn-exams', desktop: 'tab-btn-desktop' };
     for (const [key, domId] of Object.entries(tabMap)) {
       const lbl = document.querySelector(`#${domId} .tab-label`);
       if (lbl && p.tabs[key]) lbl.textContent = p.tabs[key];
@@ -1693,7 +1835,19 @@
     window.scrollTo(0, 0);
   }
 
+  function stopAutoReviewEngine() {
+    const ar = state.autoReview;
+    ar.active = false;
+    if (ar.rafId) {
+      cancelAnimationFrame(ar.rafId);
+      ar.rafId = null;
+    }
+    ar.lastTickTs = 0;
+    ar.scrollCarry = 0;
+  }
+
   function closeFormModal() {
+    stopAutoReviewEngine();
     blurActiveInput();
     document.documentElement.classList.remove('ios-input-focused');
     if (modalPage.classList.contains('hidden')) return;
@@ -1735,6 +1889,7 @@
   }
 
   function closeSheet() {
+    stopAutoReviewEngine();
     if (!modalPage.classList.contains('hidden')) {
       closeFormModal();
       return;
@@ -1806,41 +1961,107 @@
   })();
 
   // =========================================================================
-  // Bootstrap & Data Refresh (Preserves scroll position, avoids mid-animation flash)
+  // Offline Cache Readiness & Instant Local-First Bootstrap
   // =========================================================================
 
+  async function checkOfflineCacheStatus() {
+    try {
+      if (typeof caches === 'undefined') return false;
+      const keys = await caches.keys();
+      const shixuKey = keys.find((k) => k.startsWith('shixu-shell-'));
+      if (!shixuKey) return false;
+      const cache = await caches.open(shixuKey);
+      const hasIndex = Boolean(await cache.match('./index.html', { ignoreSearch: true }) || await cache.match('./', { ignoreSearch: true }));
+      const hasApp = Boolean(await cache.match('./app.js', { ignoreSearch: true }));
+      state.offlineReady = hasIndex && hasApp;
+      return state.offlineReady;
+    } catch {
+      return false;
+    }
+  }
+
+  async function refreshOfflineCache() {
+    if (!('serviceWorker' in navigator)) {
+      showHud('当前浏览器不支持离线缓存', 'var(--orange)');
+      return;
+    }
+    if (!navigator.onLine) {
+      showHud('当前处于离线状态，已直接使用本机离线缓存', 'var(--orange)');
+      return;
+    }
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sw = reg.active || navigator.serviceWorker.controller;
+      if (sw) {
+        await new Promise((resolve) => {
+          const ch = new MessageChannel();
+          const timer = setTimeout(resolve, 2500);
+          ch.port1.onmessage = () => { clearTimeout(timer); resolve(); };
+          sw.postMessage({ type: 'REFRESH_OFFLINE_CACHE' }, [ch.port2]);
+        });
+      }
+      await checkOfflineCacheStatus();
+      if (state.activeTab === 'desktop' && state.data && state.data.user) renderView(false);
+      showHud(state.offlineReady ? '离线资源已全部校验就绪（断网可秒开）' : '离线缓存已刷新', 'var(--green)');
+    } catch {
+      showHud('离线缓存刷新失败，请稍后重试', 'var(--red)');
+    }
+  }
+
   async function loadBootstrap(silent = false) {
+    state.isOnline = typeof navigator !== 'undefined' ? navigator.onLine !== false : true;
+    const isStaticHost = /\.github\.io$/i.test(window.location.hostname) || window.location.protocol === 'file:';
+
     if (state.mode === 'auto') {
-      try {
-        const res = await fetch(`./api/bootstrap?userId=${encodeURIComponent(state.userId)}`);
-        const ct = res.headers.get('content-type') || '';
-        if (res.ok && ct.includes('application/json')) {
-          const data = await res.json();
-          if (data && 'user' in data) {
-            state.mode = 'server';
-            applyBootstrapData(data, !silent);
-            return;
+      if (!isStaticHost && state.isOnline) {
+        const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(() => ctrl.abort(), 1200) : null;
+        try {
+          const res = await fetch(`./api/bootstrap?userId=${encodeURIComponent(state.userId)}`, ctrl ? { signal: ctrl.signal } : {});
+          if (timer) clearTimeout(timer);
+          const ct = res.headers.get('content-type') || '';
+          if (res.ok && ct.includes('application/json')) {
+            const data = await res.json();
+            if (data && 'user' in data) {
+              state.mode = 'server';
+              applyBootstrapData(data, !silent);
+              return;
+            }
           }
+        } catch {
+          if (timer) clearTimeout(timer);
         }
-      } catch {}
+      }
       state.mode = getSupabaseConfig() ? 'supabase' : 'local';
     }
 
     if (state.mode === 'server') {
+      if (!state.isOnline) {
+        applyBootstrapData(buildLocalBootstrap(state.userId), !silent);
+        return;
+      }
       try {
         const data = await api(`/api/bootstrap?userId=${encodeURIComponent(state.userId)}`);
         applyBootstrapData(data, !silent);
       } catch (err) {
-        if (!silent) showHud(err.message || '连接服务失败', 'var(--red)');
+        applyBootstrapData(buildLocalBootstrap(state.userId), !silent);
+        if (!silent) showHud('当前无法连接服务器，已自动切换本地离线数据', 'var(--orange)');
       }
     } else {
-      if (state.mode === 'supabase' && state.userId && !silent) {
+      // Instant Local-First Render (Zero network blocking in Airplane Mode!)
+      applyBootstrapData(buildLocalBootstrap(state.userId), !silent);
+
+      // Background cloud pull ONLY when online
+      if (state.mode === 'supabase' && state.isOnline && state.userId && !silent) {
         const localUser = getLocalStore().users.find((u) => u.id === state.userId);
         if (localUser && localUser.account) {
-          await pullAccountFromSupabase(localUser.account, null).catch(() => {});
+          pullAccountFromSupabase(localUser.account, null)
+            .then((pulled) => {
+              if (pulled) applyBootstrapData(buildLocalBootstrap(state.userId), false);
+            })
+            .catch(() => {});
         }
       }
-      applyBootstrapData(buildLocalBootstrap(state.userId), !silent);
     }
   }
 
@@ -1935,11 +2156,11 @@ Script.complete();`;
       navUsername.textContent = '统一账户';
     }
     const p = getPack();
-    const compactMap = { groups: p.groupTitle, exams: p.examTitle, desktop: p.tabs.desktop };
+    const compactMap = { mistakes: p.reviewNotebook, groups: p.groupTitle, exams: p.examTitle, desktop: p.tabs.desktop };
     compactTitle.textContent = u
       ? (state.activeTab === 'today' ? getRelativeDayTitle(state.selectedDate) : (compactMap[state.activeTab] || TAB_TITLES[state.activeTab] || '时序'))
       : '时序';
-    const showFab = Boolean(u) && (state.activeTab === 'today' || state.activeTab === 'exams');
+    const showFab = Boolean(u) && (state.activeTab === 'today' || state.activeTab === 'mistakes' || state.activeTab === 'exams');
     fabAdd.classList.toggle('is-hidden', !showFab);
     const tabBar = document.querySelector('.tab-bar');
     if (tabBar) tabBar.classList.toggle('hidden', !u);
@@ -2112,6 +2333,15 @@ Script.complete();`;
     }
 
     const p = getPack();
+    const offlineBanner = !state.isOnline ? `
+      <div class="offline-banner" role="status">
+        <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+          <span class="offline-banner-dot"></span>
+          <span>离线模式运行中 · 所有学习任务、错题本与复习进度自动保存在本机</span>
+        </div>
+      </div>
+    ` : '';
+
     const focusCapsule = state.focus.running ? `
       <div class="focus-live-bar" data-action="open-focus" role="button" aria-label="展开正在运行的专注计时">
         <div class="focus-live-left">
@@ -2123,14 +2353,17 @@ Script.complete();`;
     ` : '';
 
     if (state.activeTab === 'today') {
-      viewContainer.innerHTML = focusCapsule + buildTodayView();
+      viewContainer.innerHTML = offlineBanner + focusCapsule + buildTodayView();
+    } else if (state.activeTab === 'mistakes') {
+      viewContainer.innerHTML = offlineBanner + focusCapsule + buildMistakesView();
+      bindMistakesViewEvents();
     } else if (state.activeTab === 'groups') {
-      viewContainer.innerHTML = focusCapsule + buildGroupsView();
+      viewContainer.innerHTML = offlineBanner + focusCapsule + buildGroupsView();
       bindGroupFeedComposer();
     } else if (state.activeTab === 'exams') {
-      viewContainer.innerHTML = focusCapsule + buildExamsView();
+      viewContainer.innerHTML = offlineBanner + focusCapsule + buildExamsView();
     } else if (state.activeTab === 'desktop') {
-      viewContainer.innerHTML = focusCapsule + buildDesktopView();
+      viewContainer.innerHTML = offlineBanner + focusCapsule + buildDesktopView();
       requestAnimationFrame(() => {
         const previewImg = document.getElementById('wallpaper-preview-img');
         if (previewImg) previewImg.src = renderLockscreenCanvasDataUrl(true);
@@ -2554,6 +2787,255 @@ Script.complete();`;
     `;
   }
 
+  function getFilteredMistakeEntries() {
+    const today = todayKey();
+    const allReviews = ((state.data && state.data.tasks) || []).filter((t) => isReviewTask(t));
+    const enriched = allReviews.map((t) => ({ task: t, metrics: computeEbbinghausMetrics(t, today) }));
+
+    // Sort by Ebbinghaus urgency desc so most urgent items always surface first
+    enriched.sort((a, b) => {
+      if (b.metrics.urgencyScore !== a.metrics.urgencyScore) return b.metrics.urgencyScore - a.metrics.urgencyScore;
+      return (b.task.createdAt || 0) - (a.task.createdAt || 0);
+    });
+
+    const q = (state.mistakeSearch || '').trim().toLowerCase();
+    return enriched.filter(({ task: t, metrics: m }) => {
+      if (state.mistakeFilter === 'due' && !m.isDueNow) return false;
+      if (state.mistakeFilter === 'weak' && (t.mastery || 'weak') !== 'weak') return false;
+      if (state.mistakeFilter === 'reviewing' && t.mastery !== 'reviewing') return false;
+      if (state.mistakeFilter === 'mastered' && t.mastery !== 'mastered') return false;
+      if (state.mistakeSubject !== 'all' && (t.category || '未分组') !== state.mistakeSubject) return false;
+      if (q) {
+        const hay = `${t.title || ''} ${t.mistakeNote || ''} ${t.mistakeReason || ''} ${t.category || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }
+
+  function renderMistakeCardsHTML(entries) {
+    const p = getPack();
+    const today = todayKey();
+    const cats = (state.data && state.data.categories) || [];
+    const catColorMap = new Map(cats.map((c) => [c.name, c.color]));
+
+    if (!entries.length) {
+      const totalMistakes = ((state.data && state.data.tasks) || []).filter((t) => isReviewTask(t)).length;
+      return `
+        <section class="card empty-box">
+          <div style="font-size:15px;font-weight:600;color:var(--text-primary);">
+            ${totalMistakes ? '当前筛选条件下暂无匹配错题' : `还没有录入任何${esc(p.reviewLabel)}`}
+          </div>
+          <p style="font-size:12px;margin:6px 0 14px;line-height:1.55;">
+            ${totalMistakes
+              ? '可切换上方状态或科目筛选，或清空搜索词查看全部错题。'
+              : '一键记录错题与易忘知识点，系统自动按艾宾浩斯遗忘曲线排期，并支持独立全屏滚动自动复习。'}
+          </p>
+          <div style="display:flex;justify-content:center;flex-wrap:wrap;gap:8px;">
+            ${totalMistakes ? `<button type="button" class="btn-secondary btn-sm" data-action="reset-mistake-filters">显示全部错题</button>` : ''}
+            <button type="button" class="btn-primary btn-sm" data-action="open-quick-mistake">+ 一键记录错误知识点</button>
+          </div>
+        </section>
+      `;
+    }
+
+    return `
+      <div class="mistake-list">
+        ${entries.map(({ task: t, metrics: m }) => {
+          const masteryObj = MASTERY_LEVELS[t.mastery] || MASTERY_LEVELS.weak;
+          const catColor = catColorMap.get(t.category) || '#0071E3';
+          const dates = Array.isArray(t.reviewDates) && t.reviewDates.length ? t.reviewDates : [t.date];
+          const doneSet = new Set(Array.isArray(t.completedDates) ? t.completedDates : []);
+          const doneToday = doneSet.has(today);
+          return `
+            <article class="card mistake-card ${m.isDueNow ? 'is-due' : ''}" data-mistake-card="${t.id}">
+              <div class="mistake-card-head">
+                <div style="min-width:0;flex:1;">
+                  <div class="mistake-card-badges">
+                    <span class="mistake-cat-pill">
+                      <span class="category-color-dot" style="width:7px;height:7px;background:${catColor};"></span>
+                      ${esc(t.category || '未分组')}
+                    </span>
+                    <span class="mistake-retention-badge ${m.badgeCls} tabular">${esc(m.dueLabel)}</span>
+                    ${t.mistakeReason ? `<span class="mistake-reason-tag">${esc(t.mistakeReason)}</span>` : ''}
+                  </div>
+                  <div class="mistake-card-title">${esc(t.title)}</div>
+                </div>
+                <button type="button" class="mastery-pill ${masteryObj.cls}" data-action="cycle-mastery" data-id="${t.id}" title="点击切换掌握状态">${masteryObj.label}</button>
+              </div>
+
+              ${t.mistakeNote ? `<div class="mistake-solution-box">${esc(t.mistakeNote)}</div>` : ''}
+
+              <div class="review-schedule-preview" style="margin-top:10px;">
+                ${dates.map((d, idx) => `
+                  <span class="review-date-chip ${doneSet.has(d) ? 'is-done' : ''}">R${idx + 1} ${formatShortMD(d)}${doneSet.has(d) ? ' ✓' : ''}</span>
+                `).join('')}
+              </div>
+
+              <div class="mistake-card-foot">
+                <span style="font-size:11px;color:var(--text-secondary);" class="tabular">
+                  已完成 ${m.doneRounds}/${m.totalRounds} 轮${t.reviewCount ? ` · 累计温习 ${t.reviewCount} 次` : ''}
+                </span>
+                <div class="mistake-card-actions">
+                  ${doneToday
+                    ? `<span style="font-size:12px;font-weight:600;color:var(--green);padding:4px 8px;">今日已复 ✓</span>`
+                    : `<button type="button" class="btn-secondary btn-sm" style="color:var(--accent);padding:5px 10px;" data-action="mistake-checkin-today" data-id="${t.id}">打卡复习</button>`}
+                  <button type="button" class="btn-secondary btn-sm" style="padding:5px 10px;" data-action="open-auto-review-from" data-id="${t.id}">滚动复盘</button>
+                  <button type="button" class="btn-secondary btn-sm" style="padding:5px 10px;" data-action="edit-task" data-id="${t.id}">编辑</button>
+                  <button type="button" class="task-delete-btn" data-action="delete-task" data-id="${t.id}" aria-label="删除错题" title="删除">${CLOSE_ICON_SVG}</button>
+                </div>
+              </div>
+            </article>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  function buildMistakesView() {
+    const p = getPack();
+    const today = todayKey();
+    const allReviews = ((state.data && state.data.tasks) || []).filter((t) => isReviewTask(t));
+    const allEnriched = allReviews.map((t) => ({ task: t, metrics: computeEbbinghausMetrics(t, today) }));
+
+    const dueCount = allEnriched.filter((x) => x.metrics.isDueNow).length;
+    const weakCount = allEnriched.filter((x) => (x.task.mastery || 'weak') === 'weak').length;
+    const revCount = allEnriched.filter((x) => x.task.mastery === 'reviewing').length;
+    const masCount = allEnriched.filter((x) => x.task.mastery === 'mastered').length;
+    const avgRetention = allEnriched.length
+      ? Math.round(allEnriched.reduce((acc, x) => acc + x.metrics.retentionPct, 0) / allEnriched.length)
+      : 100;
+
+    // 6-stage Ebbinghaus distribution buckets
+    const stageLabels = ['刚录入', '第1轮', '第2轮', '第3轮', '第4+轮', '已牢记'];
+    const stageCounts = [0, 0, 0, 0, 0, 0];
+    allEnriched.forEach(({ task: t, metrics: m }) => {
+      if (t.mastery === 'mastered') stageCounts[5]++;
+      else if (m.doneRounds <= 0) stageCounts[0]++;
+      else if (m.doneRounds === 1) stageCounts[1]++;
+      else if (m.doneRounds === 2) stageCounts[2]++;
+      else if (m.doneRounds === 3) stageCounts[3]++;
+      else stageCounts[4]++;
+    });
+
+    const subjects = Array.from(new Set(allReviews.map((t) => t.category || '未分组')));
+    if (state.mistakeSubject !== 'all' && !subjects.includes(state.mistakeSubject)) {
+      state.mistakeSubject = 'all';
+    }
+    const filtered = getFilteredMistakeEntries();
+
+    return `
+      <div class="page-header">
+        <div>
+          <div class="page-date">艾宾浩斯遗忘曲线 · 智能防忘引擎</div>
+          <h1 class="page-title">${esc(p.reviewNotebook)}</h1>
+        </div>
+        <button type="button" class="btn-primary btn-sm" data-action="open-quick-mistake">+ 一键记错题</button>
+      </div>
+
+      <section class="card mistake-hero">
+        <div class="mistake-hero-top">
+          <div>
+            <div class="mistake-hero-kicker">遗忘曲线实时监测</div>
+            <div class="mistake-hero-big tabular">
+              ${allReviews.length === 0 ? '0' : dueCount}<span style="font-size:15px;font-weight:500;color:var(--text-secondary);margin-left:5px;">题今日待复习</span>
+            </div>
+            <div class="mistake-hero-sub">
+              ${allReviews.length === 0
+                ? '一键录入错误知识点，系统按遗忘曲线自动排期并滚动推送复习。'
+                : (dueCount > 0
+                  ? `共收录 ${allReviews.length} 条知识点 · 系统已按遗忘风险从高到低排好滚动队列`
+                  : `共收录 ${allReviews.length} 条知识点 · 今日必复已清零，可随时开启滚动巩固`)}
+            </div>
+          </div>
+          <div class="ring-box">
+            ${ringSVG(avgRetention, 56, 5.5, avgRetention >= 75 ? 'var(--green)' : (avgRetention >= 50 ? 'var(--orange)' : 'var(--red)'))}
+            <span class="ring-center" style="font-size:11px;">${avgRetention}%</span>
+          </div>
+        </div>
+
+        <div class="mistake-stat-strip">
+          <div class="mistake-stat-pill">
+            <div class="mistake-stat-num tabular" style="color:var(--red);">${weakCount}</div>
+            <div class="mistake-stat-lbl">未掌握</div>
+          </div>
+          <div class="mistake-stat-pill">
+            <div class="mistake-stat-num tabular" style="color:var(--orange);">${revCount}</div>
+            <div class="mistake-stat-lbl">待巩固</div>
+          </div>
+          <div class="mistake-stat-pill">
+            <div class="mistake-stat-num tabular" style="color:var(--green);">${masCount}</div>
+            <div class="mistake-stat-lbl">已掌握</div>
+          </div>
+        </div>
+
+        <div class="mistake-hero-actions">
+          <button type="button" class="btn-primary" id="btn-launch-auto-review" data-action="open-auto-review">
+            ▶ 遗忘曲线滚动复习
+          </button>
+          <button type="button" class="btn-secondary" data-action="open-quick-mistake">
+            + 一键记错题
+          </button>
+        </div>
+      </section>
+
+      <section class="card ebbinghaus-strip">
+        <div class="ebbinghaus-strip-head">
+          <span style="font-size:13px;font-weight:700;">遗忘曲线稳固阶段分布</span>
+          <span style="font-size:11px;color:var(--text-tertiary);">平均记忆留存 ${avgRetention}%</span>
+        </div>
+        <div class="ebbinghaus-nodes">
+          ${stageLabels.map((lbl, i) => `
+            <div class="curve-node ${stageCounts[i] > 0 ? 'has-items' : ''}">
+              <span class="curve-node-count tabular">${stageCounts[i]}</span>
+              <span class="curve-node-day">${lbl}</span>
+            </div>
+          `).join('')}
+        </div>
+      </section>
+
+      <div class="mistake-search-wrap">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"/>
+          <path d="M20 20l-3.5-3.5"/>
+        </svg>
+        <input id="input-mistake-search" class="mistake-search-input" type="search" placeholder="搜索错题知识点、解析或错因…" value="${esc(state.mistakeSearch)}" />
+        ${state.mistakeSearch ? `<button type="button" class="btn-secondary btn-sm" style="padding:4px 9px;font-size:11px;" data-action="clear-mistake-search">清空</button>` : ''}
+      </div>
+
+      <div class="mistake-filter-scroll">
+        <button type="button" class="choice-chip ${state.mistakeFilter === 'all' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="all">全部 (${allReviews.length})</button>
+        <button type="button" class="choice-chip ${state.mistakeFilter === 'due' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="due">今日待复 (${dueCount})</button>
+        <button type="button" class="choice-chip ${state.mistakeFilter === 'weak' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="weak">未掌握 (${weakCount})</button>
+        <button type="button" class="choice-chip ${state.mistakeFilter === 'reviewing' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="reviewing">待巩固 (${revCount})</button>
+        <button type="button" class="choice-chip ${state.mistakeFilter === 'mastered' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="mastered">已掌握 (${masCount})</button>
+      </div>
+
+      ${subjects.length >= 2 ? `
+        <div class="mistake-filter-scroll" style="margin-top:-4px;">
+          <button type="button" class="choice-chip ${state.mistakeSubject === 'all' ? 'is-selected' : ''}" data-action="set-mistake-subject" data-subject="all">全部科目</button>
+          ${subjects.map((sub) => `
+            <button type="button" class="choice-chip ${state.mistakeSubject === sub ? 'is-selected' : ''}" data-action="set-mistake-subject" data-subject="${esc(sub)}">${esc(sub)}</button>
+          `).join('')}
+        </div>
+      ` : ''}
+
+      <div id="mistake-list-container">
+        ${renderMistakeCardsHTML(filtered)}
+      </div>
+    `;
+  }
+
+  function bindMistakesViewEvents() {
+    const searchInput = document.getElementById('input-mistake-search');
+    if (!searchInput) return;
+    searchInput.addEventListener('input', () => {
+      state.mistakeSearch = searchInput.value;
+      const box = document.getElementById('mistake-list-container');
+      if (box) box.innerHTML = renderMistakeCardsHTML(getFilteredMistakeEntries());
+    });
+  }
+
   function buildGroupsView() {
     const p = getPack();
     const { groups, user } = state.data;
@@ -2778,6 +3260,26 @@ Script.complete();`;
         </div>
         <button class="btn-secondary btn-sm" data-action="open-style-packs">${esc(p.name)} ▾</button>
       </div>
+
+      <section class="card card-padded" style="margin-bottom:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+          <div>
+            <div style="font-size:16px;font-weight:700;letter-spacing:-0.015em;">离线免网运行引擎</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">
+              ${state.isOnline ? '当前已联网' : '当前处于离线模式'} · 数据永久保存在本机加密库
+            </div>
+          </div>
+          <span class="offline-ready-badge ${state.offlineReady ? '' : 'is-pending'}">
+            ${state.offlineReady ? '● 离线已就绪（断网可秒开）' : '○ 正在缓存离线壳'}
+          </span>
+        </div>
+        <p style="font-size:12px;color:var(--text-secondary);line-height:1.55;margin:10px 0 12px;">
+          只要在有网时打开过一次本页，完整程序与账户/错题数据即已自动缓存至手机本地。<strong>开启飞行模式或完全无网时</strong>，直接从 iPhone 主屏幕图标（或 Safari 书签）打开即可秒开使用，所有打卡、错题记录与遗忘曲线滚动复习均 100% 离线可用。
+        </p>
+        <button type="button" class="btn-secondary btn-block" data-action="refresh-offline-cache">
+          校验并更新离线缓存（确保断网秒开）
+        </button>
+      </section>
 
       <section class="card card-padded">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
@@ -3328,7 +3830,7 @@ Script.complete();`;
 
               <div class="field" style="margin-bottom:0;">
                 <label class="field-label" for="input-mistake-note">错因 / 关键解题思路（选填）</label>
-                <textarea id="input-mistake-note" class="input" maxlength="120" rows="3" placeholder="记录当时为什么做错、关键公式或易混陷阱，下次复习一眼回想…">${esc(initialNote)}</textarea>
+                <textarea id="input-mistake-note" class="input" maxlength="400" rows="3" placeholder="记录当时为什么做错、关键公式或易混陷阱，下次复习一眼回想…">${esc(initialNote)}</textarea>
               </div>
             </div>
           </div>
@@ -3539,6 +4041,734 @@ Script.complete();`;
         submitting = false;
       }
     });
+  }
+
+  // =========================================================================
+  // 1-Tap Quick Mistake / Knowledge Point Recorder (一键记录错误知识点)
+  // =========================================================================
+
+  function openQuickMistakeModal(prefillCategory = '') {
+    if (!state.data || !state.data.user) return;
+    const p = getPack();
+    const cats = (state.data && state.data.categories) || [];
+    const defaultCat = prefillCategory
+      || state.lastMistakeCategory
+      || (cats[0] ? cats[0].name : '错题精练');
+    let selectedReason = '';
+    let selectedPreset = 'ebbinghaus';
+    let submitting = false;
+
+    function previewDatesHtml() {
+      const dates = generateReviewDates(todayKey(), selectedPreset);
+      return dates.map((d, i) => `<span class="review-date-chip">第${i + 1}轮 ${formatShortMD(d)}</span>`).join('');
+    }
+
+    openFormModal({
+      title: `一键记录${p.reviewLabel}`,
+      primaryLabel: '入库',
+      formId: 'form-quick-mistake',
+      bodyHtml: `
+        <form id="form-quick-mistake">
+          <div class="modal-group-title">错误知识点（10 秒速记）</div>
+          <div class="modal-group-card">
+            <div class="field">
+              <label class="field-label" for="input-qm-title">错题 / 易忘知识点标题</label>
+              <input id="input-qm-title" class="input" type="text" required maxlength="60" placeholder="例如：定积分换元漏改上下限 / 善意取得构成要件" />
+            </div>
+
+            <div class="field">
+              <label class="field-label" for="input-qm-note">正确解析 / 避坑要点（复习时可遮盖自测，选填）</label>
+              <textarea id="input-qm-note" class="input" maxlength="400" rows="3" placeholder="写下关键公式、正确结论或易混陷阱，遗忘曲线滚动复习时会自动呈现帮助你强化记忆…"></textarea>
+            </div>
+
+            <div class="field" style="margin-bottom:0;">
+              <label class="field-label">错因快速标记（可选）</label>
+              <div class="chip-row" id="qm-reason-chips">
+                ${MISTAKE_REASONS.map((r) => `
+                  <button type="button" class="choice-chip" data-qm-reason="${esc(r)}">${esc(r)}</button>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-group-title">归属科目与遗忘曲线排期</div>
+          <div class="modal-group-card">
+            <div class="field">
+              <label class="field-label" for="input-qm-cat">所属科目大标题</label>
+              <input id="input-qm-cat" class="input" type="text" required maxlength="18" placeholder="例如：高数、专业课、英语" value="${esc(defaultCat)}" />
+              ${cats.length ? `
+                <div class="chip-row" style="margin-top:8px;">
+                  ${cats.map((c) => `
+                    <button type="button" class="choice-chip ${c.name === defaultCat ? 'is-selected' : ''}" data-qm-cat="${esc(c.name)}">${esc(c.name)}</button>
+                  `).join('')}
+                </div>
+              ` : ''}
+            </div>
+
+            <div class="field" style="margin-bottom:0;">
+              <label class="field-label">遗忘曲线复习周期（自动排入时间轴与滚动复习舱）</label>
+              <div class="chip-row" id="qm-preset-chips">
+                ${['ebbinghaus', 'ebbinghaus_long', 'sprint'].map((pid) => {
+                  const pr = REVIEW_PRESETS[pid];
+                  return `<button type="button" class="choice-chip ${pid === selectedPreset ? 'is-selected' : ''}" data-qm-preset="${pid}">${esc(pr.short)}</button>`;
+                }).join('')}
+              </div>
+              <div id="qm-preset-desc" style="font-size:12px;color:var(--text-secondary);margin-top:6px;">
+                ${esc(REVIEW_PRESETS.ebbinghaus.desc)}
+              </div>
+              <div class="review-schedule-preview" id="qm-schedule-preview">
+                ${previewDatesHtml()}
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top:6px;display:flex;flex-direction:column;gap:10px;">
+            <button type="submit" id="btn-qm-save" class="btn-primary btn-block">一键入库并生成遗忘曲线计划</button>
+            <button type="button" id="btn-qm-save-next" class="btn-secondary btn-block" style="color:var(--accent);">保存并继续记录下一条</button>
+          </div>
+        </form>
+      `
+    });
+
+    const titleEl = document.getElementById('input-qm-title');
+    const noteEl = document.getElementById('input-qm-note');
+    const catEl = document.getElementById('input-qm-cat');
+    const descEl = document.getElementById('qm-preset-desc');
+    const previewEl = document.getElementById('qm-schedule-preview');
+
+    modalPage.querySelectorAll('[data-qm-reason]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const val = btn.dataset.qmReason;
+        selectedReason = selectedReason === val ? '' : val;
+        modalPage.querySelectorAll('[data-qm-reason]').forEach((b) => b.classList.toggle('is-selected', b.dataset.qmReason === selectedReason));
+      });
+    });
+
+    modalPage.querySelectorAll('[data-qm-cat]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        catEl.value = btn.dataset.qmCat;
+        modalPage.querySelectorAll('[data-qm-cat]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+      });
+    });
+
+    catEl.addEventListener('input', () => {
+      const val = catEl.value.trim();
+      modalPage.querySelectorAll('[data-qm-cat]').forEach((b) => b.classList.toggle('is-selected', b.dataset.qmCat === val));
+    });
+
+    modalPage.querySelectorAll('[data-qm-preset]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        selectedPreset = btn.dataset.qmPreset;
+        modalPage.querySelectorAll('[data-qm-preset]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+        descEl.textContent = (REVIEW_PRESETS[selectedPreset] || REVIEW_PRESETS.ebbinghaus).desc;
+        previewEl.innerHTML = previewDatesHtml();
+      });
+    });
+
+    async function saveMistake(keepAdding = false) {
+      if (submitting) return;
+      blurActiveInput();
+      const title = titleEl.value.trim();
+      const category = catEl.value.trim() || '错题精练';
+      const mistakeNote = noteEl.value.trim();
+      if (!title) {
+        showHud('请先填写错误知识点标题', 'var(--orange)');
+        return;
+      }
+      submitting = true;
+      const today = todayKey();
+      const reviewDates = generateReviewDates(today, selectedPreset);
+      state.lastMistakeCategory = category;
+      safeStorageSet('shixu_last_mistake_cat', category);
+
+      try {
+        await api('/api/tasks', {
+          method: 'POST',
+          body: JSON.stringify({
+            userId: state.userId,
+            category,
+            title,
+            date: today,
+            durationMin: 20,
+            repeatDaily: false,
+            taskType: 'review',
+            reviewPreset: selectedPreset,
+            reviewDates,
+            mistakeNote,
+            mistakeReason: selectedReason,
+            mastery: 'weak'
+          })
+        });
+        if (state.collapsedCategories.has(category)) {
+          state.collapsedCategories.delete(category);
+          saveCollapsedCategories();
+        }
+        await loadBootstrap(true);
+        if (keepAdding) {
+          titleEl.value = '';
+          noteEl.value = '';
+          selectedReason = '';
+          modalPage.querySelectorAll('[data-qm-reason]').forEach((b) => b.classList.remove('is-selected'));
+          showHud(`已入库「${title.slice(0, 12)}」，可继续记录下一条`, 'var(--green)');
+        } else {
+          closeSheet();
+          showHud(`已记录错题，自动排入 ${reviewDates.length} 轮遗忘曲线`, 'var(--green)');
+        }
+      } catch (err) {
+        showHud(err.message || '保存失败', 'var(--red)');
+      } finally {
+        submitting = false;
+      }
+    }
+
+    document.getElementById('form-quick-mistake').addEventListener('submit', (e) => {
+      e.preventDefault();
+      saveMistake(false);
+    });
+
+    document.getElementById('btn-qm-save-next').addEventListener('click', () => {
+      saveMistake(true);
+    });
+  }
+
+  // =========================================================================
+  // Dedicated Ebbinghaus Auto-Scrolling Review Studio (遗忘曲线滚动自动复习舱)
+  // =========================================================================
+
+  function openEbbinghausAutoReview({ startTaskId = '', scope = null, mode = null } = {}) {
+    if (!state.data || !state.data.user) return;
+    stopAutoReviewEngine();
+
+    const ar = state.autoReview;
+    if (scope) ar.scope = scope;
+    if (mode) ar.mode = mode;
+
+    const SPEED_MAP = {
+      slow: { label: '慢速', ms: 8000, pxPerSec: 24 },
+      normal: { label: '标准', ms: 5000, pxPerSec: 42 },
+      fast: { label: '速览', ms: 3000, pxPerSec: 68 }
+    };
+    const SCOPE_LABELS = {
+      ebbinghaus: '遗忘曲线优先',
+      due: '今日待复',
+      weak: '薄弱专项',
+      all: '全部错题'
+    };
+
+    function getQueue() {
+      return buildEbbinghausReviewQueue(state.data.tasks || [], { scope: ar.scope });
+    }
+
+    let queue = getQueue();
+    if (startTaskId) {
+      let foundIdx = queue.findIndex((x) => x.task.id === startTaskId);
+      if (foundIdx === -1 && ar.scope !== 'all') {
+        ar.scope = 'all';
+        queue = getQueue();
+        foundIdx = queue.findIndex((x) => x.task.id === startTaskId);
+      }
+      ar.index = foundIdx >= 0 ? foundIdx : 0;
+    } else {
+      ar.index = Math.min(ar.index, Math.max(0, queue.length - 1));
+    }
+    ar.elapsedMs = 0;
+    ar.revealed = false;
+    ar.playing = queue.length > 0;
+    ar.active = true;
+
+    const totalMistakesCount = ((state.data && state.data.tasks) || []).filter((t) => isReviewTask(t)).length;
+
+    openFormModal({
+      title: '遗忘曲线滚动复习',
+      primaryLabel: queue.length ? `${ar.index + 1}/${queue.length}` : '',
+      bodyHtml: `
+        <div class="ar-studio" id="ar-studio-root">
+          <div class="ar-control-strip">
+            <div class="segmented-control" style="width:100%;display:grid;grid-template-columns:1fr 1fr;">
+              <button type="button" class="seg-btn ${ar.mode === 'card' ? 'is-active' : ''}" data-ar-mode="card">记忆卡自动轮播</button>
+              <button type="button" class="seg-btn ${ar.mode === 'stream' ? 'is-active' : ''}" data-ar-mode="stream">连续自动滚动流</button>
+            </div>
+            <div class="mistake-filter-scroll" style="margin-bottom:0;">
+              ${Object.entries(SCOPE_LABELS).map(([k, lbl]) => `
+                <button type="button" class="choice-chip ${ar.scope === k ? 'is-selected' : ''}" data-ar-scope="${k}">${lbl}</button>
+              `).join('')}
+            </div>
+          </div>
+
+          <div id="ar-stage-host"></div>
+
+          <div class="ar-playback-card ${queue.length ? '' : 'hidden'}" id="ar-playback-card">
+            <div class="ar-transport-row">
+              <button type="button" class="btn-secondary btn-sm" id="ar-btn-prev" style="justify-content:center;">上一题</button>
+              <button type="button" class="btn-primary" id="ar-btn-play">${ar.playing ? '⏸ 暂停自动滚动' : '▶ 开始自动滚动'}</button>
+              <button type="button" class="btn-secondary btn-sm" id="ar-btn-next" style="justify-content:center;">下一题</button>
+            </div>
+
+            <div class="ar-toggles-row">
+              <div class="chip-row" style="gap:6px;">
+                ${Object.entries(SPEED_MAP).map(([sk, sv]) => `
+                  <button type="button" class="choice-chip ${ar.speed === sk ? 'is-selected' : ''}" style="padding:5px 11px;font-size:12px;" data-ar-speed="${sk}">${sv.label}</button>
+                `).join('')}
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;">
+                <button type="button" class="choice-chip ${ar.autoReveal ? 'is-selected' : ''}" style="padding:5px 10px;font-size:12px;" id="ar-btn-reveal-mode">自动显解析</button>
+                <button type="button" class="choice-chip ${ar.loop ? 'is-selected' : ''}" style="padding:5px 10px;font-size:12px;" id="ar-btn-loop">循环</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `
+    });
+
+    // Make right nav counter non-closing informative pill
+    const navPrimary = modalPage.querySelector('.modal-nav-btn.is-primary');
+    if (navPrimary) {
+      navPrimary.removeAttribute('data-action');
+      navPrimary.style.cursor = 'default';
+      navPrimary.style.fontWeight = '600';
+      navPrimary.style.fontSize = '14px';
+    }
+
+    const stageHost = document.getElementById('ar-stage-host');
+    const playbackCard = document.getElementById('ar-playback-card');
+    const btnPlay = document.getElementById('ar-btn-play');
+    const btnPrev = document.getElementById('ar-btn-prev');
+    const btnNext = document.getElementById('ar-btn-next');
+    const btnRevealMode = document.getElementById('ar-btn-reveal-mode');
+    const btnLoop = document.getElementById('ar-btn-loop');
+
+    function updateNavCounter(curIdx, total) {
+      if (!navPrimary) return;
+      navPrimary.textContent = total > 0 ? `${Math.min(curIdx + 1, total)}/${total}` : '';
+    }
+
+    function syncPlayButton() {
+      if (!btnPlay) return;
+      btnPlay.textContent = ar.playing
+        ? (ar.mode === 'stream' ? '⏸ 暂停自动滚动' : '⏸ 暂停自动轮播')
+        : (ar.mode === 'stream' ? '▶ 开始自动滚动' : '▶ 开始自动轮播');
+    }
+
+    async function applyRating(taskId, grade) {
+      const today = todayKey();
+      const t = (state.data.tasks || []).find((x) => x.id === taskId);
+      if (!t) return;
+
+      const patch = { mastery: grade, bumpReview: true };
+      if (grade === 'weak') {
+        const tom = shiftDateISO(today, 1);
+        const curDates = Array.isArray(t.reviewDates) && t.reviewDates.length ? t.reviewDates : [t.date || today];
+        patch.reviewDates = Array.from(new Set([...curDates, tom])).sort();
+        t.reviewDates = patch.reviewDates;
+      } else {
+        patch.done = true;
+        patch.date = today;
+        if (!Array.isArray(t.completedDates)) t.completedDates = [];
+        if (!t.completedDates.includes(today)) t.completedDates.push(today);
+      }
+      t.mastery = grade;
+      t.reviewCount = (Number(t.reviewCount) || 0) + 1;
+      t.lastReviewedAt = Date.now();
+
+      const hudMap = {
+        weak: ['已标记「仍模糊」，已自动加入明日复习计划', 'var(--red)'],
+        reviewing: ['已标记「待巩固」，今日复习轮次已打卡', 'var(--orange)'],
+        mastered: ['已标记「已牢记 ✓」，遗忘曲线稳固度大幅提升', 'var(--green)']
+      };
+      showHud(hudMap[grade][0], hudMap[grade][1]);
+
+      try {
+        await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify(patch) });
+        scheduleQuietSync(320);
+      } catch (err) {
+        showHud(err.message || '同步失败', 'var(--red)');
+      }
+
+      if (ar.mode === 'card') {
+        stepCard(1);
+      } else {
+        // Update badge in stream card in place without jumping scroll position
+        const cardEl = stageHost.querySelector(`[data-stream-card="${taskId}"]`);
+        if (cardEl) {
+          const m = computeEbbinghausMetrics(t, today);
+          const mObj = MASTERY_LEVELS[t.mastery] || MASTERY_LEVELS.weak;
+          const badge = cardEl.querySelector('.mistake-retention-badge');
+          if (badge) {
+            badge.className = `mistake-retention-badge ${m.badgeCls} tabular`;
+            badge.textContent = m.dueLabel;
+          }
+          const mpill = cardEl.querySelector('.mastery-pill');
+          if (mpill) {
+            mpill.className = `mastery-pill ${mObj.cls}`;
+            mpill.textContent = mObj.label;
+          }
+        }
+      }
+    }
+
+    function renderEmptyStage() {
+      updateNavCounter(0, 0);
+      if (playbackCard) playbackCard.classList.add('hidden');
+      stageHost.innerHTML = `
+        <div class="card empty-box" style="padding:36px 20px;">
+          <div style="font-size:16px;font-weight:700;color:var(--text-primary);">
+            ${totalMistakesCount ? `「${SCOPE_LABELS[ar.scope]}」下暂无待复习错题` : '错题本目前还是空的'}
+          </div>
+          <p style="font-size:13px;margin:8px 0 18px;line-height:1.55;">
+            ${totalMistakesCount
+              ? '当前范围已全部完成，可以切换到「全部错题」继续滚动巩固，或录入新错题。'
+              : '先一键记录几道容易忘的知识点，即可立即启动艾宾浩斯遗忘曲线自动滚动复习。'}
+          </p>
+          <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;">
+            ${totalMistakesCount ? `<button type="button" class="btn-primary btn-sm" id="ar-btn-switch-all">切换到「全部错题」复习</button>` : ''}
+            <button type="button" class="${totalMistakesCount ? 'btn-secondary' : 'btn-primary'} btn-sm" id="ar-btn-quick-add">+ 一键记录错题</button>
+          </div>
+        </div>
+      `;
+      const swAll = document.getElementById('ar-btn-switch-all');
+      if (swAll) {
+        swAll.addEventListener('click', () => {
+          ar.scope = 'all';
+          rebuildStage();
+        });
+      }
+      const qAdd = document.getElementById('ar-btn-quick-add');
+      if (qAdd) qAdd.addEventListener('click', () => openQuickMistakeModal());
+    }
+
+    function renderCardStage() {
+      if (!queue.length) return renderEmptyStage();
+      if (playbackCard) playbackCard.classList.remove('hidden');
+      if (ar.index >= queue.length) ar.index = 0;
+      if (ar.index < 0) ar.index = queue.length - 1;
+
+      const entry = queue[ar.index];
+      const t = entry.task;
+      const m = computeEbbinghausMetrics(t, todayKey());
+      const mObj = MASTERY_LEVELS[t.mastery] || MASTERY_LEVELS.weak;
+      const cats = (state.data && state.data.categories) || [];
+      const catColor = (cats.find((c) => c.name === t.category) || {}).color || '#0071E3';
+      const hasNote = Boolean(t.mistakeNote && t.mistakeNote.trim());
+      const showAnswer = ar.revealed;
+
+      updateNavCounter(ar.index, queue.length);
+      stageHost.innerHTML = `
+        <div class="ar-stage-card" id="ar-stage-card">
+          <div class="ar-progress-bar"><div class="ar-progress-fill" id="ar-progress-fill" style="width:0%;"></div></div>
+          <div>
+            <div class="ar-card-meta-row">
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                <span class="mistake-cat-pill">
+                  <span class="category-color-dot" style="width:7px;height:7px;background:${catColor};"></span>
+                  ${esc(t.category || '未分组')}
+                </span>
+                <span class="mistake-retention-badge ${m.badgeCls} tabular">${esc(m.dueLabel)}</span>
+                ${t.mistakeReason ? `<span class="mistake-reason-tag">${esc(t.mistakeReason)}</span>` : ''}
+              </div>
+              <span class="mastery-pill ${mObj.cls}">${mObj.label}</span>
+            </div>
+
+            <div class="ar-card-question">${esc(t.title)}</div>
+
+            <div class="ar-answer-panel ${showAnswer ? '' : 'is-masked'}" id="ar-answer-panel" role="button" tabindex="0">
+              ${showAnswer ? `
+                <div class="ar-answer-label">正确解析 / 核心避坑点</div>
+                <div class="ar-answer-text">${hasNote ? esc(t.mistakeNote) : '未填写解析笔记，回想解题关键步骤后在下方点击掌握度评分。'}</div>
+              ` : `
+                <div style="font-size:14px;font-weight:600;color:var(--accent);">先在脑中回想答案 · 点击立即查看解析</div>
+                <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">${ar.autoReveal && ar.playing ? '自动轮播模式下将自动为你揭晓解析' : '点击卡片任意处即可展开'}</div>
+              `}
+            </div>
+          </div>
+
+          <div class="ar-grade-grid">
+            <button type="button" class="ar-grade-btn is-weak" data-ar-grade="weak">
+              仍模糊<span>明日加练</span>
+            </button>
+            <button type="button" class="ar-grade-btn is-reviewing" data-ar-grade="reviewing">
+              有印象<span>待巩固</span>
+            </button>
+            <button type="button" class="ar-grade-btn is-mastered" data-ar-grade="mastered">
+              已牢记 ✓<span>提高留存</span>
+            </button>
+          </div>
+        </div>
+      `;
+
+      const ansPanel = document.getElementById('ar-answer-panel');
+      if (ansPanel) {
+        ansPanel.addEventListener('click', () => {
+          ar.revealed = !ar.revealed;
+          renderCardStage();
+          const fill = document.getElementById('ar-progress-fill');
+          const dur = (SPEED_MAP[ar.speed] || SPEED_MAP.normal).ms;
+          if (fill) fill.style.width = `${Math.min(100, (ar.elapsedMs / dur) * 100).toFixed(1)}%`;
+        });
+      }
+
+      stageHost.querySelectorAll('[data-ar-grade]').forEach((btn) => {
+        btn.addEventListener('click', () => applyRating(t.id, btn.dataset.arGrade));
+      });
+    }
+
+    function renderStreamStage() {
+      if (!queue.length) return renderEmptyStage();
+      if (playbackCard) playbackCard.classList.remove('hidden');
+      const cats = (state.data && state.data.categories) || [];
+      const catColorMap = new Map(cats.map((c) => [c.name, c.color]));
+
+      updateNavCounter(ar.index, queue.length);
+      stageHost.innerHTML = `
+        <div class="ar-stream-hint">按遗忘曲线风险从高到低排布 · 手指滑动时自动暂停，绝不抢手</div>
+        <div class="ar-stream-viewport" id="ar-stream-viewport">
+          ${queue.map(({ task: t, metrics: m }, idx) => {
+            const mObj = MASTERY_LEVELS[t.mastery] || MASTERY_LEVELS.weak;
+            const catColor = catColorMap.get(t.category) || '#0071E3';
+            const hasNote = Boolean(t.mistakeNote && t.mistakeNote.trim());
+            const masked = !ar.autoReveal;
+            return `
+              <article class="ar-stream-card ${idx === ar.index ? 'is-focus-card' : ''}" data-stream-card="${t.id}" data-stream-idx="${idx}">
+                <div class="ar-card-meta-row" style="margin-top:0;margin-bottom:8px;">
+                  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                    <span class="mistake-cat-pill">
+                      <span class="category-color-dot" style="width:7px;height:7px;background:${catColor};"></span>
+                      ${esc(t.category || '未分组')}
+                    </span>
+                    <span class="mistake-retention-badge ${m.badgeCls} tabular">${esc(m.dueLabel)}</span>
+                    ${t.mistakeReason ? `<span class="mistake-reason-tag">${esc(t.mistakeReason)}</span>` : ''}
+                  </div>
+                  <span class="mastery-pill ${mObj.cls}">${mObj.label}</span>
+                </div>
+
+                <div style="font-size:17px;font-weight:700;line-height:1.42;color:var(--text-primary);margin-bottom:10px;">
+                  ${idx + 1}. ${esc(t.title)}
+                </div>
+
+                <div class="ar-answer-panel ${masked ? 'is-masked' : ''}" data-stream-answer="${t.id}">
+                  ${masked ? `
+                    <div style="font-size:13px;font-weight:600;color:var(--accent);">点击展开解析 / 避坑思路</div>
+                  ` : `
+                    <div class="ar-answer-label">解析与要点</div>
+                    <div class="ar-answer-text">${hasNote ? esc(t.mistakeNote) : '暂无补充解析，重点回忆核心思路与公式。'}</div>
+                  `}
+                </div>
+
+                <div class="ar-grade-grid" style="margin-top:10px;">
+                  <button type="button" class="ar-grade-btn is-weak" style="padding:8px 4px;font-size:12px;" data-stream-grade="${t.id}" data-grade="weak">仍模糊</button>
+                  <button type="button" class="ar-grade-btn is-reviewing" style="padding:8px 4px;font-size:12px;" data-stream-grade="${t.id}" data-grade="reviewing">有印象</button>
+                  <button type="button" class="ar-grade-btn is-mastered" style="padding:8px 4px;font-size:12px;" data-stream-grade="${t.id}" data-grade="mastered">已牢记 ✓</button>
+                </div>
+              </article>
+            `;
+          }).join('')}
+        </div>
+      `;
+
+      const vp = document.getElementById('ar-stream-viewport');
+      if (vp) {
+        const pauseOnUserGesture = () => {
+          if (ar.playing) {
+            ar.playing = false;
+            syncPlayButton();
+          }
+        };
+        vp.addEventListener('touchstart', pauseOnUserGesture, { passive: true });
+        vp.addEventListener('wheel', pauseOnUserGesture, { passive: true });
+
+        vp.addEventListener('scroll', () => {
+          const cards = Array.from(vp.querySelectorAll('.ar-stream-card'));
+          if (!cards.length) return;
+          const vpRect = vp.getBoundingClientRect();
+          const midY = vpRect.top + vpRect.height * 0.36;
+          let bestIdx = 0;
+          let bestDist = Infinity;
+          cards.forEach((c, i) => {
+            const r = c.getBoundingClientRect();
+            const d = Math.abs((r.top + r.height / 2) - midY);
+            if (d < bestDist) { bestDist = d; bestIdx = i; }
+          });
+          if (bestIdx !== ar.index) {
+            ar.index = bestIdx;
+            updateNavCounter(bestIdx, cards.length);
+            cards.forEach((c, i) => c.classList.toggle('is-focus-card', i === bestIdx));
+          }
+        }, { passive: true });
+
+        if (ar.index > 0) {
+          const targetCard = vp.querySelector(`[data-stream-idx="${ar.index}"]`);
+          if (targetCard) vp.scrollTop = Math.max(0, targetCard.offsetTop - 12);
+        }
+      }
+
+      stageHost.querySelectorAll('[data-stream-answer]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const id = el.dataset.streamAnswer;
+          const t = (state.data.tasks || []).find((x) => x.id === id);
+          if (!t) return;
+          const hasNote = Boolean(t.mistakeNote && t.mistakeNote.trim());
+          el.classList.remove('is-masked');
+          el.innerHTML = `
+            <div class="ar-answer-label">解析与要点</div>
+            <div class="ar-answer-text">${hasNote ? esc(t.mistakeNote) : '暂无补充解析，重点回忆核心思路与公式。'}</div>
+          `;
+        });
+      });
+
+      stageHost.querySelectorAll('[data-stream-grade]').forEach((btn) => {
+        btn.addEventListener('click', () => applyRating(btn.dataset.streamGrade, btn.dataset.grade));
+      });
+    }
+
+    function stepCard(delta) {
+      if (!queue.length) return;
+      if (ar.mode === 'stream') {
+        const vp = document.getElementById('ar-stream-viewport');
+        const nextIdx = (ar.index + delta + queue.length) % queue.length;
+        ar.index = nextIdx;
+        const target = vp && vp.querySelector(`[data-stream-idx="${nextIdx}"]`);
+        if (vp && target) {
+          vp.scrollTo({ top: Math.max(0, target.offsetTop - 10), behavior: 'smooth' });
+        }
+        updateNavCounter(nextIdx, queue.length);
+        return;
+      }
+      ar.elapsedMs = 0;
+      ar.revealed = false;
+      const next = ar.index + delta;
+      if (next >= queue.length) {
+        if (ar.loop) {
+          ar.index = 0;
+        } else {
+          ar.playing = false;
+          syncPlayButton();
+          showHud('本轮遗忘曲线复习已全部完成！', 'var(--green)');
+          return;
+        }
+      } else if (next < 0) {
+        ar.index = queue.length - 1;
+      } else {
+        ar.index = next;
+      }
+      renderCardStage();
+    }
+
+    function tickAutoReview(ts) {
+      if (!ar.active) return;
+      if (!ar.lastTickTs) ar.lastTickTs = ts;
+      const dt = Math.min(120, Math.max(0, ts - ar.lastTickTs));
+      ar.lastTickTs = ts;
+
+      if (ar.playing && queue.length > 0) {
+        const spd = SPEED_MAP[ar.speed] || SPEED_MAP.normal;
+        if (ar.mode === 'card') {
+          ar.elapsedMs += dt;
+          const fill = document.getElementById('ar-progress-fill');
+          if (fill) fill.style.width = `${Math.min(100, (ar.elapsedMs / spd.ms) * 100).toFixed(1)}%`;
+
+          if (ar.autoReveal && !ar.revealed && ar.elapsedMs >= spd.ms * 0.45) {
+            ar.revealed = true;
+            renderCardStage();
+            const fill2 = document.getElementById('ar-progress-fill');
+            if (fill2) fill2.style.width = `${Math.min(100, (ar.elapsedMs / spd.ms) * 100).toFixed(1)}%`;
+          }
+
+          if (ar.elapsedMs >= spd.ms) {
+            stepCard(1);
+          }
+        } else {
+          const vp = document.getElementById('ar-stream-viewport');
+          if (vp) {
+            const maxScroll = Math.max(0, vp.scrollHeight - vp.clientHeight);
+            if (maxScroll > 2) {
+              ar.scrollCarry += (spd.pxPerSec * dt) / 1000;
+              const stepPx = Math.floor(ar.scrollCarry);
+              if (stepPx >= 1) {
+                ar.scrollCarry -= stepPx;
+                if (vp.scrollTop + stepPx >= maxScroll - 1) {
+                  if (ar.loop) {
+                    vp.scrollTop = 0;
+                  } else {
+                    vp.scrollTop = maxScroll;
+                    ar.playing = false;
+                    syncPlayButton();
+                    showHud('已滚动复习完本轮全部错题！', 'var(--green)');
+                  }
+                } else {
+                  vp.scrollTop += stepPx;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      ar.rafId = requestAnimationFrame(tickAutoReview);
+    }
+
+    function rebuildStage() {
+      queue = getQueue();
+      ar.index = Math.min(ar.index, Math.max(0, queue.length - 1));
+      ar.elapsedMs = 0;
+      ar.revealed = false;
+      ar.scrollCarry = 0;
+      modalPage.querySelectorAll('[data-ar-mode]').forEach((b) => b.classList.toggle('is-active', b.dataset.arMode === ar.mode));
+      modalPage.querySelectorAll('[data-ar-scope]').forEach((b) => b.classList.toggle('is-selected', b.dataset.arScope === ar.scope));
+      if (ar.mode === 'stream') renderStreamStage();
+      else renderCardStage();
+      syncPlayButton();
+    }
+
+    modalPage.querySelectorAll('[data-ar-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (ar.mode === btn.dataset.arMode) return;
+        ar.mode = btn.dataset.arMode;
+        rebuildStage();
+      });
+    });
+
+    modalPage.querySelectorAll('[data-ar-scope]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        ar.scope = btn.dataset.arScope;
+        ar.index = 0;
+        rebuildStage();
+      });
+    });
+
+    modalPage.querySelectorAll('[data-ar-speed]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        ar.speed = btn.dataset.arSpeed;
+        modalPage.querySelectorAll('[data-ar-speed]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+      });
+    });
+
+    if (btnPlay) {
+      btnPlay.addEventListener('click', () => {
+        ar.playing = !ar.playing;
+        ar.lastTickTs = 0;
+        syncPlayButton();
+      });
+    }
+    if (btnPrev) btnPrev.addEventListener('click', () => stepCard(-1));
+    if (btnNext) btnNext.addEventListener('click', () => stepCard(1));
+
+    if (btnRevealMode) {
+      btnRevealMode.addEventListener('click', () => {
+        ar.autoReveal = !ar.autoReveal;
+        btnRevealMode.classList.toggle('is-selected', ar.autoReveal);
+        if (ar.mode === 'stream') renderStreamStage();
+        else renderCardStage();
+      });
+    }
+
+    if (btnLoop) {
+      btnLoop.addEventListener('click', () => {
+        ar.loop = !ar.loop;
+        btnLoop.classList.toggle('is-selected', ar.loop);
+      });
+    }
+
+    rebuildStage();
+    ar.rafId = requestAnimationFrame(tickAutoReview);
   }
 
   function openReviewNotebookSheet(filterMastery = 'all') {
@@ -4226,6 +5456,7 @@ Script.complete();`;
   fabAdd.addEventListener('click', () => {
     if (!state.data || !state.data.user) return;
     if (state.activeTab === 'exams') openExamEditorSheet(null);
+    else if (state.activeTab === 'mistakes') openQuickMistakeModal();
     else openTaskEditorSheet(null, '', state.taskFilter === 'review' ? 'review' : 'normal');
   });
 
@@ -4243,8 +5474,66 @@ Script.complete();`;
     if (action === 'close-sheet') { e.preventDefault(); e.stopPropagation(); return closeSheet(); }
     if (action === 'open-style-packs') return openStylePackSheet();
     if (action === 'open-add-task') return openTaskEditorSheet(null, '', 'normal');
-    if (action === 'open-add-review') return openTaskEditorSheet(null, '', 'review');
-    if (action === 'open-review-notebook') return openReviewNotebookSheet('all');
+    if (action === 'open-add-review') return openQuickMistakeModal();
+    if (action === 'open-quick-mistake') return openQuickMistakeModal(btn.dataset.category || '');
+    if (action === 'open-auto-review') return openEbbinghausAutoReview();
+    if (action === 'open-auto-review-from') return openEbbinghausAutoReview({ startTaskId: btn.dataset.id || '' });
+    if (action === 'open-review-notebook') {
+      state.activeTab = 'mistakes';
+      syncTabButtons();
+      window.scrollTo(0, 0);
+      topNav.classList.remove('is-scrolled');
+      renderView(true);
+      return;
+    }
+    if (action === 'refresh-offline-cache') return refreshOfflineCache();
+    if (action === 'set-mistake-filter') {
+      const next = btn.dataset.filter || 'all';
+      if (state.mistakeFilter !== next) {
+        state.mistakeFilter = next;
+        renderView(false);
+      }
+      return;
+    }
+    if (action === 'set-mistake-subject') {
+      const next = btn.dataset.subject || 'all';
+      if (state.mistakeSubject !== next) {
+        state.mistakeSubject = next;
+        renderView(false);
+      }
+      return;
+    }
+    if (action === 'clear-mistake-search') {
+      state.mistakeSearch = '';
+      renderView(false);
+      return;
+    }
+    if (action === 'reset-mistake-filters') {
+      state.mistakeFilter = 'all';
+      state.mistakeSubject = 'all';
+      state.mistakeSearch = '';
+      renderView(false);
+      return;
+    }
+    if (action === 'mistake-checkin-today') {
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      const task = state.data.tasks.find((x) => x.id === id);
+      if (!task) return;
+      const today = todayKey();
+      const nextMastery = (task.mastery || 'weak') === 'weak' ? 'reviewing' : task.mastery;
+      try {
+        await api(`/api/tasks/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ done: true, date: today, mastery: nextMastery, bumpReview: true })
+        });
+        await loadBootstrap(true);
+        showHud('今日复习已打卡，遗忘曲线留存率提升', 'var(--green)');
+      } catch (err) {
+        showHud(err.message || '打卡失败', 'var(--red)');
+      }
+      return;
+    }
     if (action === 'open-add-task-in-cat') {
       e.stopPropagation();
       return openTaskEditorSheet(null, btn.dataset.category || '', state.taskFilter === 'review' ? 'review' : 'normal');
@@ -4566,13 +5855,37 @@ Script.complete();`;
     console.warn('[Recovered Rejection]', ev.reason);
   });
 
+  // Live Online / Offline network status awareness
+  window.addEventListener('online', () => {
+    state.isOnline = true;
+    showHud('网络已恢复，数据自动保持同步', 'var(--green)');
+    if (state.data && state.data.user) {
+      renderView(false);
+      if (state.mode === 'supabase') loadBootstrap(true);
+    }
+  });
+
+  window.addEventListener('offline', () => {
+    state.isOnline = false;
+    showHud('已切换至离线模式，全部学习与错题功能可正常使用', 'var(--orange)');
+    if (state.data && state.data.user) renderView(false);
+  });
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('./sw.js').then((reg) => {
+        checkOfflineCacheStatus().then((ready) => {
+          if (ready && state.activeTab === 'desktop' && state.data && state.data.user) renderView(false);
+        });
         reg.addEventListener('updatefound', () => {
           const nw = reg.installing;
           if (!nw) return;
           nw.addEventListener('statechange', () => {
+            if (nw.state === 'activated' || nw.state === 'installed') {
+              checkOfflineCacheStatus().then(() => {
+                if (state.activeTab === 'desktop' && state.data && state.data.user) renderView(false);
+              });
+            }
             if (nw.state === 'installed' && navigator.serviceWorker.controller) {
               showHud('新版本已就绪，数据安全保留', 'var(--accent)', {
                 label: '立即刷新',
@@ -4589,6 +5902,7 @@ Script.complete();`;
   applyTheme(state.theme);
   checkWeChatBrowser();
   parseUrlActions();
+  checkOfflineCacheStatus();
 
   initPermanentStorage().then(() => loadBootstrap(false)).then(() => {
     setupRealtime();

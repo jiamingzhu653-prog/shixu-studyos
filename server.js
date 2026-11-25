@@ -728,8 +728,11 @@ const server = http.createServer(async (req, res) => {
         taskType: isReview ? 'review' : 'normal',
         reviewPreset: isReview ? String(body.reviewPreset || 'ebbinghaus').slice(0, 20) : '',
         reviewDates: isReview ? (cleanReviewDates.length ? cleanReviewDates : [taskDate]) : [],
-        mistakeNote: isReview ? String(body.mistakeNote || '').trim().slice(0, 120) : '',
+        mistakeNote: isReview ? String(body.mistakeNote || '').trim().slice(0, 400) : '',
+        mistakeReason: isReview ? String(body.mistakeReason || '').trim().slice(0, 24) : '',
         mastery: isReview && ['weak', 'reviewing', 'mastered'].includes(body.mastery) ? body.mastery : (isReview ? 'weak' : ''),
+        reviewCount: isReview ? Math.max(0, Number(body.reviewCount) || 0) : 0,
+        lastReviewedAt: isReview ? (Number(body.lastReviewedAt) || Date.now()) : 0,
         durationMin: Math.min(360, Math.max(5, Number(body.durationMin) || 30)),
         repeatDaily: isReview ? false : Boolean(body.repeatDaily),
         date: taskDate,
@@ -781,6 +784,7 @@ const server = http.createServer(async (req, res) => {
           task.reviewDates = [];
           task.reviewPreset = '';
           task.mistakeNote = '';
+          task.mistakeReason = '';
           task.mastery = '';
         } else {
           task.repeatDaily = false;
@@ -790,8 +794,15 @@ const server = http.createServer(async (req, res) => {
       if (Array.isArray(body.reviewDates)) {
         task.reviewDates = Array.from(new Set(body.reviewDates.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d))))).sort();
       }
-      if (typeof body.mistakeNote === 'string') task.mistakeNote = body.mistakeNote.trim().slice(0, 120);
+      if (typeof body.mistakeNote === 'string') task.mistakeNote = body.mistakeNote.trim().slice(0, 400);
+      if (typeof body.mistakeReason === 'string') task.mistakeReason = body.mistakeReason.trim().slice(0, 24);
       if (['weak', 'reviewing', 'mastered', ''].includes(body.mastery)) task.mastery = body.mastery;
+      if (typeof body.reviewCount === 'number' && body.reviewCount >= 0) task.reviewCount = Math.round(body.reviewCount);
+      if (typeof body.lastReviewedAt === 'number' && body.lastReviewedAt > 0) task.lastReviewedAt = body.lastReviewedAt;
+      if (body.bumpReview === true) {
+        task.reviewCount = (Number(task.reviewCount) || 0) + 1;
+        task.lastReviewedAt = Date.now();
+      }
 
       const targetDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : todayKey();
       if (!Array.isArray(task.completedDates)) task.completedDates = [];
