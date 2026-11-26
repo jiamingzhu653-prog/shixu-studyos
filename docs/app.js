@@ -518,6 +518,7 @@
     offlineReady: false,
     userId: '',
     authMode: 'login',
+    authModeExplicit: false,
     stylePack: STYLE_PACKS[safeStorageGet('shixu_style_pack')] ? safeStorageGet('shixu_style_pack') : 'apple',
     theme: safeStorageGet('shixu_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
     activeTab: 'today',
@@ -958,16 +959,20 @@
   // Supabase Zero-Cost Ultra-Low-Bandwidth Cloud Sync (Accounts + Groups)
   // =========================================================================
 
+  function normalizeSupabaseUrl(raw) {
+    return String(raw || '').trim().replace(/\/+$/, '').replace(/\/rest\/v1$/i, '').replace(/\/+$/, '');
+  }
+
   function getSupabaseConfig() {
     const cfg = window.SHIXU_CLOUD_CONFIG || {};
-    let url = String(cfg.supabaseUrl || '').trim().replace(/\/$/, '');
+    let url = normalizeSupabaseUrl(cfg.supabaseUrl);
     let key = String(cfg.supabaseAnonKey || '').trim();
     if (!url || !key) {
       try {
         const raw = safeStorageGet(CLOUD_OVERRIDE_KEY);
         if (raw) {
           const ov = JSON.parse(raw);
-          url = String(ov.supabaseUrl || '').trim().replace(/\/$/, '');
+          url = normalizeSupabaseUrl(ov.supabaseUrl);
           key = String(ov.supabaseAnonKey || '').trim();
         }
       } catch {}
@@ -1389,6 +1394,9 @@
         }
       }
       saveLocalStore(s);
+      if (state.mode === 'supabase' && navigator.onLine) {
+        pushAccountToSupabase(s, user.id).then((ts) => { if (ts) clearCloudDirty(ts); }).catch(() => {});
+      }
       return { user };
     }
 
@@ -2443,7 +2451,7 @@ Script.complete();`;
     }
 
     if (!state.data.user) {
-      if (state.data.users.length === 0 && state.authMode === 'login' && !state.pendingRestore) {
+      if (!state.authModeExplicit && state.data.users.length === 0 && state.authMode === 'login' && !state.pendingRestore) {
         state.authMode = 'register';
       }
       viewContainer.innerHTML = buildUnifiedAuthView();
@@ -2596,8 +2604,8 @@ Script.complete();`;
   function bindUnifiedAuthEvents() {
     const loginTab = document.getElementById('auth-tab-login');
     const regTab = document.getElementById('auth-tab-register');
-    if (loginTab) loginTab.addEventListener('click', () => { state.authMode = 'login'; renderView(false); });
-    if (regTab) regTab.addEventListener('click', () => { state.authMode = 'register'; renderView(false); });
+    if (loginTab) loginTab.addEventListener('click', () => { state.authMode = 'login'; state.authModeExplicit = true; renderView(false); });
+    if (regTab) regTab.addEventListener('click', () => { state.authMode = 'register'; state.authModeExplicit = true; renderView(false); });
 
     const unlockForm = document.getElementById('form-unlock-restore');
     if (unlockForm && state.pendingRestore) {
@@ -3826,7 +3834,7 @@ Script.complete();`;
     document.getElementById('form-cloud-config').addEventListener('submit', async (e) => {
       e.preventDefault();
       blurActiveInput();
-      const url = document.getElementById('input-sb-url').value.trim().replace(/\/$/, '');
+      const url = normalizeSupabaseUrl(document.getElementById('input-sb-url').value);
       const key = document.getElementById('input-sb-key').value.trim();
       if (!url || !key) return;
       const saveBtn = document.getElementById('btn-save-cloud-cfg');

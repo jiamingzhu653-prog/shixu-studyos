@@ -1,8 +1,6 @@
-// 时序 StudyOS · 0 成本云端账户同步配置
-// 在 https://supabase.com 创建免费项目并执行根目录的 supabase-schema.sql 后，
-// 将 Project URL 与 anon public key 填入下方并推送仓库，
-// 即可在 GitHub Pages 零成本实现「换任何手机输入账号密码自动云端拉取全部数据」。
+// 时序 StudyOS · 0 成本云端账户同步配置（Supabase 省流多端同步已启用）
+// 所有设备访问公网地址并登录同一账号，即自动开启 30 字节版本探测 + 防抖合并上传。
 window.SHIXU_CLOUD_CONFIG = {
-  supabaseUrl: '',
-  supabaseAnonKey: ''
+  supabaseUrl: 'https://mhksqveejzblkfzpdxst.supabase.co',
+  supabaseAnonKey: 'sb_publishable_y4hOzDE2BtjBb8FU1oIKiw_TpZ8rLpH'
 };
