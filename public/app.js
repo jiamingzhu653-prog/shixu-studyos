@@ -975,18 +975,26 @@
     return url && key ? { url, key } : null;
   }
 
+  function buildSupabaseHeaders(key, extra = {}) {
+    const h = {
+      apikey: key,
+      'Content-Type': 'application/json',
+      Prefer: 'return=representation',
+      ...extra
+    };
+    // Only send Authorization: Bearer for legacy JWT (eyJ...) keys; new sb_publishable_ keys use apikey only
+    if (!String(key).startsWith('sb_')) {
+      h.Authorization = `Bearer ${key}`;
+    }
+    return h;
+  }
+
   async function sbFetch(path, options = {}) {
     const cfg = getSupabaseConfig();
     if (!cfg) throw new Error('Supabase 未配置');
     const res = await fetch(`${cfg.url}/rest/v1/${path}`, {
       ...options,
-      headers: {
-        apikey: cfg.key,
-        Authorization: `Bearer ${cfg.key}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=representation',
-        ...(options.headers || {})
-      }
+      headers: buildSupabaseHeaders(cfg.key, options.headers || {})
     });
     if (!res.ok) throw new Error(`云端同步失败 (${res.status})`);
     const txt = await res.text();
@@ -3794,8 +3802,8 @@ Script.complete();`;
               <input id="input-sb-url" class="input" type="url" required placeholder="https://xxxxxxxx.supabase.co" value="${esc(cur.url)}" />
             </div>
             <div class="field" style="margin-bottom:0;">
-              <label class="field-label" for="input-sb-key">anon public Key</label>
-              <textarea id="input-sb-key" class="input" required rows="3" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6...">${esc(cur.key)}</textarea>
+              <label class="field-label" for="input-sb-key">Publishable Key / anon Key</label>
+              <textarea id="input-sb-key" class="input" required rows="3" placeholder="sb_publishable_... 或 eyJhbGciOi...">${esc(cur.key)}</textarea>
             </div>
           </div>
 
@@ -3825,7 +3833,7 @@ Script.complete();`;
       if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '正在验证云端连接…'; }
       try {
         const testRes = await fetch(`${url}/rest/v1/shixu_accounts?select=account&limit=1`, {
-          headers: { apikey: key, Authorization: `Bearer ${key}` }
+          headers: buildSupabaseHeaders(key)
         });
         if (!testRes.ok) throw new Error(`连接校验失败 (${testRes.status})，请确认已执行 supabase-schema.sql`);
         safeStorageSet(CLOUD_OVERRIDE_KEY, JSON.stringify({ supabaseUrl: url, supabaseAnonKey: key }));
