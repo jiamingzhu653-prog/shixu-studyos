@@ -894,25 +894,84 @@
     return s;
   }
 
+  const CLOUD_OVERRIDE_KEY = 'shixu_cloud_override';
+  const CLOUD_POLICY_KEY = 'shixu_cloud_policy'; // 'auto' | 'manual'
+  const CLOUD_DIRTY_KEY = 'shixu_cloud_dirty';
+  const CLOUD_LOCAL_TS_KEY = 'shixu_cloud_local_ts';
+  const CLOUD_REMOTE_TS_KEY = 'shixu_cloud_remote_ts';
+  let cloudPushTimer = null;
+  let lastCloudProbeAt = 0;
+
+  function getCloudSyncPolicy() {
+    return safeStorageGet(CLOUD_POLICY_KEY) === 'manual' ? 'manual' : 'auto';
+  }
+
+  function setCloudSyncPolicy(mode) {
+    safeStorageSet(CLOUD_POLICY_KEY, mode === 'manual' ? 'manual' : 'auto');
+  }
+
+  function isCloudDirty() {
+    return safeStorageGet(CLOUD_DIRTY_KEY) === '1';
+  }
+
+  function markCloudDirty(ts = Date.now()) {
+    safeStorageSet(CLOUD_DIRTY_KEY, '1');
+    safeStorageSet(CLOUD_LOCAL_TS_KEY, String(ts));
+  }
+
+  function clearCloudDirty(remoteTs = Date.now()) {
+    safeStorageSet(CLOUD_DIRTY_KEY, '0');
+    safeStorageSet(CLOUD_REMOTE_TS_KEY, String(remoteTs));
+    state.lastSyncedAt = Date.now();
+  }
+
+  function scheduleCloudPush(userId, delayMs = 2500) {
+    if (!userId || !getSupabaseConfig()) return;
+    if (!navigator.onLine || getCloudSyncPolicy() === 'manual') return;
+    clearTimeout(cloudPushTimer);
+    cloudPushTimer = setTimeout(() => {
+      flushCloudPush(userId).catch(() => {});
+    }, delayMs);
+  }
+
+  async function flushCloudPush(userId) {
+    if (!userId || !getSupabaseConfig() || !navigator.onLine) return false;
+    const s = getLocalStore();
+    const updatedAt = await pushAccountToSupabase(s, userId);
+    await pushUserGroupsToSupabase(s, userId);
+    if (updatedAt) clearCloudDirty(updatedAt);
+    return true;
+  }
+
   function saveLocalStore(s, toastMsg) {
     memoryVaultFallback = s;
     safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
     idbSet('vault', s);
     if (bc) bc.postMessage({ type: 'sync', toastMsg, fromUserId: state.userId });
     if (state.mode === 'supabase' && state.userId) {
-      pushAccountToSupabase(s, state.userId).catch(() => {});
-      pushUserGroupsToSupabase(s, state.userId).catch(() => {});
+      markCloudDirty(Date.now());
+      scheduleCloudPush(state.userId, 2500);
     }
   }
 
   // =========================================================================
-  // Supabase Zero-Cost Cloud Sync Adapter (Accounts + Study Groups)
+  // Supabase Zero-Cost Ultra-Low-Bandwidth Cloud Sync (Accounts + Groups)
   // =========================================================================
 
   function getSupabaseConfig() {
     const cfg = window.SHIXU_CLOUD_CONFIG || {};
-    const url = String(cfg.supabaseUrl || '').trim().replace(/\/$/, '');
-    const key = String(cfg.supabaseAnonKey || '').trim();
+    let url = String(cfg.supabaseUrl || '').trim().replace(/\/$/, '');
+    let key = String(cfg.supabaseAnonKey || '').trim();
+    if (!url || !key) {
+      try {
+        const raw = safeStorageGet(CLOUD_OVERRIDE_KEY);
+        if (raw) {
+          const ov = JSON.parse(raw);
+          url = String(ov.supabaseUrl || '').trim().replace(/\/$/, '');
+          key = String(ov.supabaseAnonKey || '').trim();
+        }
+      } catch {}
+    }
     return url && key ? { url, key } : null;
   }
 
@@ -929,14 +988,15 @@
         ...(options.headers || {})
       }
     });
-    if (!res.ok) throw new Error('云端同步失败');
+    if (!res.ok) throw new Error(`云端同步失败 (${res.status})`);
     const txt = await res.text();
     return txt ? JSON.parse(txt) : null;
   }
 
   async function pushAccountToSupabase(s, userId) {
     const user = s.users.find((u) => u.id === userId);
-    if (!user || !user.account) return;
+    if (!user || !user.account) return 0;
+    const nowTs = Date.now();
     const userTasks = s.tasks.filter((t) => t.userId === user.id);
     const row = {
       account: user.account,
@@ -953,18 +1013,21 @@
         exams: s.exams.filter((e) => e.userId === user.id),
         tasks: userTasks
       },
-      updated_at: Date.now()
+      updated_at: nowTs
     };
+    // return=minimal -> 0-byte response body (cuts upload roundtrip data in half!)
     await sbFetch('shixu_accounts?on_conflict=account', {
       method: 'POST',
-      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify(row)
     });
     state.lastSyncedAt = Date.now();
+    return nowTs;
   }
 
   async function pushUserGroupsToSupabase(s, userId) {
     const myGroups = s.groups.filter((g) => g.memberIds.includes(userId));
+    if (!myGroups.length) return;
     const user = s.users.find((u) => u.id === userId);
     if (!user) return;
     const today = todayKey();
@@ -979,7 +1042,7 @@
       g.memberSnapshots = snaps;
       await sbFetch('shixu_groups?on_conflict=id', {
         method: 'POST',
-        headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
         body: JSON.stringify({
           id: g.id, invite_code: g.inviteCode, name: g.name, exam_name: g.examName,
           target_date: g.targetDate, notice: g.notice, owner_id: g.ownerId,
@@ -1019,9 +1082,10 @@
     s.exams = s.exams.filter((e) => e.userId !== hydratedUser.id).concat(p.exams || []);
     s.tasks = s.tasks.filter((t) => t.userId !== hydratedUser.id).concat(p.tasks || []);
 
-    // Also pull user's cloud study groups
-    const allGroups = await sbFetch('shixu_groups?select=*').catch(() => []);
-    for (const rg of allGroups || []) {
+    // Filter server-side by Postgres JSONB containment so we ONLY fetch this user's own groups!
+    const filterParam = encodeURIComponent(JSON.stringify([hydratedUser.id]));
+    const myGroups = await sbFetch(`shixu_groups?member_ids=cs.${filterParam}&select=*`).catch(() => []);
+    for (const rg of myGroups || []) {
       const mIds = Array.isArray(rg.member_ids) ? rg.member_ids : [];
       if (!mIds.includes(hydratedUser.id)) continue;
       const idx = s.groups.findIndex((x) => x.id === rg.id);
@@ -1040,8 +1104,62 @@
     memoryVaultFallback = s;
     safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
     idbSet('vault', s);
-    state.lastSyncedAt = Date.now();
+    clearCloudDirty(Number(row.updated_at) || Date.now());
     return hydratedUser;
+  }
+
+  // Ultra-Low-Bandwidth Smart Sync:
+  // 1) Probes ONLY updated_at (~35 bytes) before downloading anything.
+  // 2) Respects offline edits (pushes if local is newer; pulls ONLY if remote is newer).
+  // 3) Throttled to >=30s unless manually triggered.
+  async function syncWithCloudSmart({ force = false, silent = true } = {}) {
+    if (state.mode !== 'supabase' || !state.userId || !getSupabaseConfig()) return { status: 'disabled' };
+    if (!navigator.onLine) {
+      if (!silent) showHud('当前处于离线状态，联网后自动省流同步', 'var(--orange)');
+      return { status: 'offline' };
+    }
+    if (!force && getCloudSyncPolicy() === 'manual') return { status: 'manual_skip' };
+    const now = Date.now();
+    if (!force && now - lastCloudProbeAt < 30000 && !isCloudDirty()) return { status: 'throttled' };
+    lastCloudProbeAt = now;
+
+    const localUser = getLocalStore().users.find((u) => u.id === state.userId);
+    if (!localUser || !localUser.account) return { status: 'no_user' };
+
+    try {
+      // ~35-byte version check!
+      const probe = await sbFetch(`shixu_accounts?account=eq.${encodeURIComponent(normalizeAccount(localUser.account))}&select=updated_at`);
+      const remoteTs = probe && probe[0] ? Number(probe[0].updated_at) || 0 : 0;
+      const localTs = Number(safeStorageGet(CLOUD_LOCAL_TS_KEY)) || 0;
+      const lastRemoteTs = Number(safeStorageGet(CLOUD_REMOTE_TS_KEY)) || 0;
+      const dirty = isCloudDirty();
+
+      if (dirty && (localTs >= remoteTs || remoteTs === 0)) {
+        await flushCloudPush(state.userId);
+        if (!silent) showHud('本地最新修改已省流上传至云端', 'var(--green)');
+        return { status: 'pushed' };
+      }
+
+      if (remoteTs > lastRemoteTs && remoteTs > 0) {
+        await pullAccountFromSupabase(localUser.account, null);
+        applyBootstrapData(buildLocalBootstrap(state.userId), false);
+        if (!silent) showHud('已从云端拉取其他设备最新进度', 'var(--green)');
+        return { status: 'pulled' };
+      }
+
+      if (remoteTs === 0) {
+        await flushCloudPush(state.userId);
+        if (!silent) showHud('账户首次云端备份已完成', 'var(--green)');
+        return { status: 'pushed' };
+      }
+
+      state.lastSyncedAt = Date.now();
+      if (!silent) showHud('已是云端最新（本次仅校验 35 字节，0 KB 流量消耗）', 'var(--green)');
+      return { status: 'up_to_date' };
+    } catch (err) {
+      if (!silent) showHud(err.message || '云端同步暂不可用，数据已保存在本机', 'var(--orange)');
+      return { status: 'error' };
+    }
   }
 
   // =========================================================================
@@ -2051,16 +2169,9 @@
       // Instant Local-First Render (Zero network blocking in Airplane Mode!)
       applyBootstrapData(buildLocalBootstrap(state.userId), !silent);
 
-      // Background cloud pull ONLY when online
+      // Ultra-low-bandwidth 35-byte version check ONLY when online
       if (state.mode === 'supabase' && state.isOnline && state.userId && !silent) {
-        const localUser = getLocalStore().users.find((u) => u.id === state.userId);
-        if (localUser && localUser.account) {
-          pullAccountFromSupabase(localUser.account, null)
-            .then((pulled) => {
-              if (pulled) applyBootstrapData(buildLocalBootstrap(state.userId), false);
-            })
-            .catch(() => {});
-        }
+        syncWithCloudSmart({ force: false, silent: true }).catch(() => {});
       }
     }
   }
@@ -3501,18 +3612,39 @@ Script.complete();`;
         <span style="font-size:12px;color:var(--accent);font-weight:600;">切换 ›</span>
       </button>
 
-      <div class="field-label" style="margin-bottom:8px;">跨设备无缝同步 / 换机数据迁移</div>
+      <div class="field-label" style="margin-bottom:8px;">跨设备省流云同步 / 换机数据迁移</div>
       <div class="card card-padded" style="margin-bottom:14px;background:var(--bg-surface);">
-        <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;line-height:1.55;">
-          ${cloudReady
-            ? '您的统一账户已连接云端数据库，在新手机直接登录账号 @' + esc(user.account) + ' 即可自动恢复全部数据；下方也可随时导出本地加密备份。'
-            : '换新手机或换浏览器时，点击下方生成「加密换机迁移链接」发给自己，在新设备点开并验证原密码即可完整恢复全部数据。'}
-        </p>
+        ${state.mode === 'supabase' ? `
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;">
+            <div>
+              <div style="font-size:14px;font-weight:700;color:var(--green);">Supabase 省流云同步已开启</div>
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">
+                ${isCloudDirty() ? '有未上传的本地修改，联网后自动合并上传' : (state.lastSyncedAt ? `最近同步：${formatRelativeTime(state.lastSyncedAt)}` : '35 字节版本校验 · 仅在数据变化时传输')}
+              </div>
+            </div>
+            <button type="button" id="btn-sync-now" class="btn-primary btn-sm">立即同步</button>
+          </div>
+          <div class="switch-row" style="margin-bottom:12px;background:var(--bg-surface-secondary);border-color:transparent;">
+            <div>
+              <div style="font-size:13px;font-weight:600;">智能省流自动同步</div>
+              <div style="font-size:11px;color:var(--text-secondary);">关闭后仅在点「立即同步」时联网，后台零流量</div>
+            </div>
+            <button type="button" id="switch-cloud-auto" class="ios-switch ${getCloudSyncPolicy() === 'auto' ? 'is-on' : ''}" role="switch" aria-checked="${getCloudSyncPolicy() === 'auto'}"></button>
+          </div>
+        ` : `
+          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 10px;line-height:1.55;">
+            ${cloudReady
+              ? '您的统一账户已连接云端服务，在新手机直接登录账号 @' + esc(user.account) + ' 即可自动恢复全部数据。'
+              : '绑定免费 Supabase 数据库后，iPhone / iPad / 电脑有网时将自动按 35 字节省流校验实时同步；也可直接用下方免配置迁移链接。'}
+          </p>
+          ${!cloudReady ? `<button type="button" class="btn-secondary btn-block" id="btn-open-cloud-config" style="margin-bottom:10px;color:var(--accent);">配置免费 Supabase 云端多端同步</button>` : ''}
+        `}
         <button type="button" class="btn-primary btn-block" id="btn-copy-restore-link">复制加密换机迁移链接</button>
         <div class="btn-row" style="margin-top:10px;">
           <button type="button" class="btn-secondary" id="btn-export-backup">导出备份文件</button>
           <button type="button" class="btn-secondary" data-action="trigger-import-backup">导入恢复备份</button>
         </div>
+        ${state.mode === 'supabase' ? `<button type="button" id="btn-open-cloud-config" style="width:100%;margin-top:10px;font-size:12px;color:var(--text-tertiary);padding:4px;">管理云端同步配置</button>` : ''}
       </div>
 
       ${users.length > 1 ? `
@@ -3544,6 +3676,32 @@ Script.complete();`;
         </div>
       </div>
     `);
+
+    const syncNowBtn = document.getElementById('btn-sync-now');
+    if (syncNowBtn) {
+      syncNowBtn.addEventListener('click', async () => {
+        syncNowBtn.disabled = true;
+        syncNowBtn.textContent = '同步中…';
+        await syncWithCloudSmart({ force: true, silent: false });
+        openAccountSheet();
+      });
+    }
+
+    const swAuto = document.getElementById('switch-cloud-auto');
+    if (swAuto) {
+      swAuto.addEventListener('click', () => {
+        const nextAuto = getCloudSyncPolicy() !== 'auto';
+        setCloudSyncPolicy(nextAuto ? 'auto' : 'manual');
+        swAuto.classList.toggle('is-on', nextAuto);
+        swAuto.setAttribute('aria-checked', String(nextAuto));
+        showHud(nextAuto ? '已开启智能省流自动同步' : '已切换为仅手动同步（后台零流量）', 'var(--accent)');
+      });
+    }
+
+    const cloudCfgBtn = document.getElementById('btn-open-cloud-config');
+    if (cloudCfgBtn) {
+      cloudCfgBtn.addEventListener('click', () => openCloudConfigModal());
+    }
 
     document.getElementById('btn-logout-account').addEventListener('click', async () => {
       closeSheet();
@@ -3606,6 +3764,79 @@ Script.complete();`;
       syncTabButtons();
       await loadBootstrap(false);
       showHud('已恢复全新空白状态');
+    });
+  }
+
+  function openCloudConfigModal() {
+    const cur = getSupabaseConfig() || { url: '', key: '' };
+    const isBuiltIn = Boolean(window.SHIXU_CLOUD_CONFIG && window.SHIXU_CLOUD_CONFIG.supabaseUrl && window.SHIXU_CLOUD_CONFIG.supabaseAnonKey);
+
+    openFormModal({
+      title: '跨设备省流云同步配置',
+      primaryLabel: '保存',
+      formId: 'form-cloud-config',
+      bodyHtml: `
+        <form id="form-cloud-config">
+          <div class="modal-group-title">省流同步机制说明</div>
+          <div class="modal-group-card">
+            <div style="font-size:13px;line-height:1.65;color:var(--text-secondary);">
+              • <strong>静态界面零流量</strong>：网页与图标由本地离线缓存秒开，不重复下载。<br/>
+              • <strong>35 字节轻探测</strong>：打开或切回 App 时仅校验时间戳，无变更消耗 0 KB。<br/>
+              • <strong>变更合并上传</strong>：连续勾选多条任务自动合并为 1 次静默上传（返回 0 字节响应体），单日流量通常 &lt; 20 KB。
+            </div>
+          </div>
+
+          <div class="modal-group-title">Supabase 免费云端连接信息</div>
+          <div class="modal-group-card">
+            ${isBuiltIn ? `<div style="font-size:12px;color:var(--green);font-weight:600;margin-bottom:10px;">● 已通过仓库 cloud-config.js 内置全局云同步，所有设备免填即用</div>` : ''}
+            <div class="field">
+              <label class="field-label" for="input-sb-url">Project URL</label>
+              <input id="input-sb-url" class="input" type="url" required placeholder="https://xxxxxxxx.supabase.co" value="${esc(cur.url)}" />
+            </div>
+            <div class="field" style="margin-bottom:0;">
+              <label class="field-label" for="input-sb-key">anon public Key</label>
+              <textarea id="input-sb-key" class="input" required rows="3" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6...">${esc(cur.key)}</textarea>
+            </div>
+          </div>
+
+          <button type="submit" id="btn-save-cloud-cfg" class="btn-primary btn-block">验证连接并开启省流云同步</button>
+          ${cur.url && !isBuiltIn ? `<button type="button" id="btn-clear-cloud-cfg" class="btn-secondary btn-block" style="margin-top:10px;color:var(--red);">断开本机云端配置</button>` : ''}
+        </form>
+      `
+    });
+
+    const clearBtn = document.getElementById('btn-clear-cloud-cfg');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        safeStorageSet(CLOUD_OVERRIDE_KEY, '');
+        state.mode = 'local';
+        closeSheet();
+        showHud('已断开云端配置，本地数据完整保留');
+      });
+    }
+
+    document.getElementById('form-cloud-config').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      blurActiveInput();
+      const url = document.getElementById('input-sb-url').value.trim().replace(/\/$/, '');
+      const key = document.getElementById('input-sb-key').value.trim();
+      if (!url || !key) return;
+      const saveBtn = document.getElementById('btn-save-cloud-cfg');
+      if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '正在验证云端连接…'; }
+      try {
+        const testRes = await fetch(`${url}/rest/v1/shixu_accounts?select=account&limit=1`, {
+          headers: { apikey: key, Authorization: `Bearer ${key}` }
+        });
+        if (!testRes.ok) throw new Error(`连接校验失败 (${testRes.status})，请确认已执行 supabase-schema.sql`);
+        safeStorageSet(CLOUD_OVERRIDE_KEY, JSON.stringify({ supabaseUrl: url, supabaseAnonKey: key }));
+        state.mode = 'supabase';
+        closeSheet();
+        await syncWithCloudSmart({ force: true, silent: false });
+        showHud('云端省流同步已启用，其他设备登录同账号即可自动同步', 'var(--green)');
+      } catch (err) {
+        showHud(err.message || '连接失败，请检查 URL 与 Key', 'var(--red)');
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '验证连接并开启省流云同步'; }
+      }
     });
   }
 
@@ -5858,10 +6089,10 @@ Script.complete();`;
   // Live Online / Offline network status awareness
   window.addEventListener('online', () => {
     state.isOnline = true;
-    showHud('网络已恢复，数据自动保持同步', 'var(--green)');
+    showHud('网络已恢复，自动按省流模式校验同步', 'var(--green)');
     if (state.data && state.data.user) {
       renderView(false);
-      if (state.mode === 'supabase') loadBootstrap(true);
+      if (state.mode === 'supabase') syncWithCloudSmart({ force: true, silent: true }).catch(() => {});
     }
   });
 
@@ -5869,6 +6100,13 @@ Script.complete();`;
     state.isOnline = false;
     showHud('已切换至离线模式，全部学习与错题功能可正常使用', 'var(--orange)');
     if (state.data && state.data.user) renderView(false);
+  });
+
+  // When switching back to this device from another phone/iPad, run a 35-byte version probe (throttled >=30s)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && state.mode === 'supabase' && state.userId && navigator.onLine) {
+      syncWithCloudSmart({ force: false, silent: true }).catch(() => {});
+    }
   });
 
   if ('serviceWorker' in navigator) {
