@@ -593,6 +593,47 @@
     } catch {}
   }
 
+  const USER_PREFS_KEY = 'shixu_user_prefs_v1';
+  const DEFAULT_USER_PREFS = {
+    introEnabled: true,
+    introSubtitle: '',
+    themeMode: safeStorageGet('shixu_theme') || 'auto', // 'light' | 'dark' | 'auto'
+    defaultMistakeKind: 'knowledge_point', // 'wrong_question' | 'knowledge_point'
+    defaultFocusMin: 25
+  };
+
+  function loadUserPrefs() {
+    try {
+      const raw = safeStorageGet(USER_PREFS_KEY);
+      if (!raw) return { ...DEFAULT_USER_PREFS };
+      const p = JSON.parse(raw);
+      return {
+        introEnabled: p.introEnabled !== false,
+        introSubtitle: typeof p.introSubtitle === 'string' ? p.introSubtitle.slice(0, 32) : '',
+        themeMode: ['light', 'dark', 'auto'].includes(p.themeMode) ? p.themeMode : DEFAULT_USER_PREFS.themeMode,
+        defaultMistakeKind: p.defaultMistakeKind === 'wrong_question' ? 'wrong_question' : 'knowledge_point',
+        defaultFocusMin: [15, 25, 45, 60].includes(Number(p.defaultFocusMin)) ? Number(p.defaultFocusMin) : 25
+      };
+    } catch {
+      return { ...DEFAULT_USER_PREFS };
+    }
+  }
+
+  function saveUserPrefs(patch = {}) {
+    state.prefs = { ...state.prefs, ...patch };
+    try {
+      safeStorageSet(USER_PREFS_KEY, JSON.stringify(state.prefs));
+      idbSet('userPrefs', state.prefs);
+    } catch {}
+    return state.prefs;
+  }
+
+  const initialPrefs = loadUserPrefs();
+  function resolveEffectiveTheme(mode) {
+    if (mode === 'light' || mode === 'dark') return mode;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+
   const state = {
     mode: 'auto', // 'server' | 'supabase' | 'local'
     isOnline: typeof navigator !== 'undefined' ? navigator.onLine !== false : true,
@@ -600,8 +641,9 @@
     userId: '',
     authMode: 'login',
     authModeExplicit: false,
+    prefs: initialPrefs,
     stylePack: STYLE_PACKS[safeStorageGet('shixu_style_pack')] ? safeStorageGet('shixu_style_pack') : 'apple',
-    theme: safeStorageGet('shixu_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
+    theme: resolveEffectiveTheme(initialPrefs.themeMode),
     activeTab: 'today',
     taskFilter: 'all', // 'all' | 'review' | 'todo'
     mistakeKindFilter: 'all', // 'all' | 'wrong_question' | 'knowledge_point'
@@ -636,8 +678,8 @@
       queueIds: []
     },
     focus: {
-      presetMin: 25,
-      remainingSec: 25 * 60,
+      presetMin: initialPrefs.defaultFocusMin,
+      remainingSec: initialPrefs.defaultFocusMin * 60,
       endAt: null,
       running: false,
       label: '专注学习',
@@ -2438,6 +2480,50 @@
       return { ok: true };
     }
 
+    const uMatch = path.match(/^\/api\/users\/([^/]+)$/);
+    if (uMatch && method === 'PATCH') {
+      const target = s.users.find((u) => u.id === uMatch[1]);
+      if (!target) throw new Error('账户不存在');
+      if (typeof body.name === 'string') {
+        const cleanName = body.name.trim().slice(0, 16);
+        if (!cleanName) throw new Error('显示昵称不能为空');
+        target.name = cleanName;
+      }
+      if (typeof body.avatar === 'string') {
+        const cleanAvatar = Array.from(body.avatar.trim()).slice(0, 2).join('');
+        target.avatar = cleanAvatar || target.name.slice(0, 1).toUpperCase();
+      }
+      if (typeof body.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(body.color.trim())) {
+        target.color = body.color.trim();
+      }
+      if (typeof body.newPassword === 'string' && body.newPassword.length > 0) {
+        if (body.newPassword.length < 4) throw new Error('新密码至少需要 4 位');
+        target.passwordHash = await hashPassword(target.account, body.newPassword);
+      }
+      // Refresh this user's snapshot across all joined groups
+      const mySnap = buildMyMemberSnapshot(s, target.id);
+      if (mySnap) {
+        for (const g of s.groups.filter((gr) => gr.memberIds.includes(target.id))) {
+          g.memberSnapshots = { ...(g.memberSnapshots || {}), [target.id]: mySnap };
+        }
+      }
+      memoryVaultFallback = s;
+      safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
+      idbSet('vault', s);
+      if (bc) bc.postMessage({ type: 'sync', fromUserId: target.id });
+      if (state.mode === 'supabase') {
+        markCloudDirty(Date.now());
+        if (navigator.onLine) {
+          pushAccountToSupabase(s, target.id)
+            .then((ts) => { if (ts) clearCloudDirty(ts); })
+            .then(() => pushUserGroupsToSupabase(s, target.id))
+            .catch(() => {});
+        }
+      }
+      const { passwordHash, ...safeUser } = target;
+      return { user: safeUser };
+    }
+
     return { ok: true };
   }
 
@@ -2465,13 +2551,35 @@
     if (metaStatus) metaStatus.setAttribute('content', isDark ? 'black-translucent' : 'default');
   }
 
-  function applyTheme(theme) {
-    state.theme = theme;
-    safeStorageSet('shixu_theme', theme);
-    document.documentElement.setAttribute('data-theme', theme);
+  function applyTheme(mode) {
+    const nextMode = ['light', 'dark', 'auto'].includes(mode) ? mode : 'auto';
+    saveUserPrefs({ themeMode: nextMode });
+    if (nextMode === 'light' || nextMode === 'dark') {
+      safeStorageSet('shixu_theme', nextMode);
+    } else {
+      safeStorageRemove('shixu_theme');
+    }
+    const effective = resolveEffectiveTheme(nextMode);
+    state.theme = effective;
+    document.documentElement.setAttribute('data-theme', effective);
     syncThemeMeta();
-    document.getElementById('theme-icon-sun').classList.toggle('hidden', theme === 'dark');
-    document.getElementById('theme-icon-moon').classList.toggle('hidden', theme !== 'dark');
+    const sunEl = document.getElementById('theme-icon-sun');
+    const moonEl = document.getElementById('theme-icon-moon');
+    if (sunEl) sunEl.classList.toggle('hidden', effective === 'dark');
+    if (moonEl) moonEl.classList.toggle('hidden', effective !== 'dark');
+  }
+
+  if (window.matchMedia) {
+    try {
+      const darkMq = window.matchMedia('(prefers-color-scheme: dark)');
+      const onSystemThemeChange = () => {
+        if (state.prefs.themeMode === 'auto') {
+          applyTheme('auto');
+          if (state.activeTab === 'desktop' && state.data && state.data.user) renderView(false);
+        }
+      };
+      if (typeof darkMq.addEventListener === 'function') darkMq.addEventListener('change', onSystemThemeChange);
+    } catch {}
   }
 
   function applyStylePack(packId) {
@@ -2492,6 +2600,111 @@
       const defaults = Object.values(STYLE_PACKS).map((x) => x.focusDefaultLabel);
       if (defaults.includes(state.focus.label)) state.focus.label = p.focusDefaultLabel;
     }
+  }
+
+  // =========================================================================
+  // Scheme A: Apple Intelligence Aurora Entrance Animation (60fps GPU-Only)
+  // =========================================================================
+
+  let introTimers = [];
+  function getSmartIntroSubtitle() {
+    const custom = String((state.prefs && state.prefs.introSubtitle) || '').trim();
+    if (custom) return custom;
+    const hr = new Date().getHours();
+    if (state.stylePack === 'xianxia') {
+      if (hr >= 5 && hr < 12) return '晨钟初鸣，今日欲悟哪一卷心法？';
+      if (hr >= 12 && hr < 18) return '静心凝神，今日想学点什么？';
+      return '夜灯如豆，且把今日修行圆满收官。';
+    }
+    if (state.stylePack === 'kitty') {
+      if (hr >= 5 && hr < 12) return '早安呀，今天想先点亮哪一颗星？';
+      if (hr >= 12 && hr < 18) return '元气满满，今天想学点什么？';
+      return '温柔夜色里，一起把今日进度收个尾吧。';
+    }
+    if (hr >= 5 && hr < 12) return '早上好，今天想先攻克哪一科？';
+    if (hr >= 12 && hr < 18) return '今天想学点什么？';
+    if (hr >= 18 && hr < 23) return '夜色安静，今天想学点什么？';
+    return '夜深了，专注一小会儿记得早点休息。';
+  }
+
+  function playAppleIntroAnimation({ force = false } = {}) {
+    if (!state.data || !state.data.user) return;
+    if (!force) {
+      if (!state.prefs.introEnabled) return;
+      try {
+        if (sessionStorage.getItem('shixu_intro_played') === '1') return;
+        sessionStorage.setItem('shixu_intro_played', '1');
+      } catch {}
+    }
+
+    // Clear any existing intro cleanly
+    introTimers.forEach((id) => clearTimeout(id));
+    introTimers = [];
+    const prev = document.getElementById('apple-intro-overlay');
+    if (prev) prev.remove();
+
+    const user = state.data.user;
+    const today = todayKey();
+    const st = getDayStats(state.data.tasks || [], today);
+    const pending = Math.max(0, st.total - st.done);
+    const pinnedExam = (state.data.exams || [])[0] || null;
+
+    const pillParts = [];
+    if (st.total > 0) {
+      pillParts.push(pending > 0 ? `今日 ${pending} 项待完成` : `今日 ${st.total} 项已全部达成`);
+    } else {
+      pillParts.push('今日任务已就绪');
+    }
+    if (pinnedExam) {
+      pillParts.push(`距${pinnedExam.name} ${pinnedExam.daysLeft} 天`);
+    }
+
+    const kicker = state.stylePack === 'xianxia'
+      ? 'SHIXU · 问鼎修行录'
+      : (state.stylePack === 'kitty' ? 'SHIXU · SWEET STUDYOS' : 'SHIXU STUDYOS');
+
+    const overlay = document.createElement('div');
+    overlay.id = 'apple-intro-overlay';
+    overlay.className = 'apple-intro-overlay';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-label', `欢迎回来，${user.name}`);
+    overlay.innerHTML = `
+      <div class="apple-intro-orb apple-intro-orb-1" aria-hidden="true"></div>
+      <div class="apple-intro-orb apple-intro-orb-2" aria-hidden="true"></div>
+      <div class="apple-intro-orb apple-intro-orb-3" aria-hidden="true"></div>
+      <div class="apple-intro-stage">
+        <div class="apple-intro-line apple-intro-kicker">${esc(kicker)}</div>
+        <div class="apple-intro-line apple-intro-d1 apple-intro-greeting">
+          Hi, <span class="apple-intro-name">${esc(user.name)}</span>
+        </div>
+        <div class="apple-intro-line apple-intro-d2 apple-intro-sub">${esc(getSmartIntroSubtitle())}</div>
+        <div class="apple-intro-line apple-intro-d3 apple-intro-pill tabular">${esc(pillParts.join(' · '))}</div>
+      </div>
+      <div class="apple-intro-skip">轻触跳过</div>
+    `;
+
+    viewContainer.classList.remove('is-intro-settled');
+    viewContainer.classList.add('is-intro-underlay');
+    document.body.appendChild(overlay);
+
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      introTimers.forEach((id) => clearTimeout(id));
+      introTimers = [];
+      overlay.classList.add('is-leaving');
+      viewContainer.classList.remove('is-intro-underlay');
+      viewContainer.classList.add('is-intro-settled');
+      introTimers.push(setTimeout(() => {
+        if (overlay.parentNode) overlay.remove();
+        viewContainer.classList.remove('is-intro-settled');
+      }, 620));
+    };
+
+    overlay.addEventListener('click', finish);
+    const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    introTimers.push(setTimeout(finish, reduced ? 900 : 1900));
   }
 
   function openStylePackSheet() {
@@ -3320,12 +3533,22 @@ Script.complete();`;
             state.pendingInvite = null;
             if (joined) { state.activeTab = 'groups'; syncTabButtons(); }
             await loadBootstrap(false);
-            showHud(`统一账户 @${res.user.account} 已创建并记住`);
+            if (state.prefs.introEnabled) {
+              try { sessionStorage.setItem('shixu_intro_played', '1'); } catch {}
+              playAppleIntroAnimation({ force: true });
+            } else {
+              showHud(`统一账户 @${res.user.account} 已创建并记住`);
+            }
           } else {
             const res = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ account, password }) });
             saveSession(res.user.id, res.user.account);
             await loadBootstrap(false);
-            showHud(`欢迎回来，${res.user.name}`);
+            if (state.prefs.introEnabled) {
+              try { sessionStorage.setItem('shixu_intro_played', '1'); } catch {}
+              playAppleIntroAnimation({ force: true });
+            } else {
+              showHud(`欢迎回来，${res.user.name}`);
+            }
           }
         } catch (err) { showHud(err.message, 'var(--red)'); }
       });
@@ -4111,8 +4334,21 @@ Script.complete();`;
           <div class="page-date">iPhone 专属体验</div>
           <h1 class="page-title">${state.stylePack === 'xianxia' ? '玉简与桌面' : (state.stylePack === 'kitty' ? '桌面装扮与壁纸' : '桌面与倒计时')}</h1>
         </div>
-        <button class="btn-secondary btn-sm" data-action="open-style-packs">${esc(p.name)} ▾</button>
+        <button class="btn-secondary btn-sm" data-action="open-settings">设置 ›</button>
       </div>
+
+      <button type="button" class="settings-entry-banner" data-action="open-settings">
+        <div style="display:flex;align-items:center;gap:12px;min-width:0;">
+          <span class="avatar-dot" style="width:42px;height:42px;font-size:16px;background:${state.data.user.color}">${esc(state.data.user.avatar)}</span>
+          <div style="min-width:0;">
+            <div style="font-size:15px;font-weight:700;color:var(--text-primary);">账户与个性化设置</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">
+              资料修改 · 主题外观 · 入场动画（${state.prefs.introEnabled ? '已开启' : '已关闭'}）· 同步调控
+            </div>
+          </div>
+        </div>
+        <span style="font-size:13px;font-weight:600;color:var(--accent);flex-shrink:0;">调节 ›</span>
+      </button>
 
       <section class="card card-padded" style="margin-bottom:14px;">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
@@ -4310,6 +4546,296 @@ Script.complete();`;
     `);
   }
 
+  function openSettingsSheet() {
+    if (!state.data || !state.data.user) return;
+    const { user } = state.data;
+    const packs = Object.values(STYLE_PACKS);
+    let pickedColor = user.color || SYSTEM_COLORS[0];
+    let introEnabled = state.prefs.introEnabled !== false;
+    let themeMode = state.prefs.themeMode || 'auto';
+    let defaultMistakeKind = state.prefs.defaultMistakeKind || 'knowledge_point';
+    let defaultFocusMin = state.prefs.defaultFocusMin || 25;
+    let cloudAuto = getCloudSyncPolicy() === 'auto';
+    let saving = false;
+
+    openFormModal({
+      title: '设置与偏好中心',
+      primaryLabel: '保存',
+      formId: 'form-settings-center',
+      bodyHtml: `
+        <form id="form-settings-center">
+          <div class="modal-group-title">当前账户信息（自动同步至云端与小组）</div>
+          <div class="modal-group-card">
+            <div class="settings-profile-hero">
+              <span id="settings-avatar-preview" class="settings-avatar-preview" style="background:${esc(pickedColor)}">${esc(user.avatar)}</span>
+              <div style="min-width:0;flex:1;">
+                <div id="settings-name-preview" style="font-size:17px;font-weight:700;letter-spacing:-0.015em;">${esc(user.name)}</div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">统一账号：@${esc(user.account)}</div>
+              </div>
+              <button type="button" class="btn-secondary btn-sm" data-action="open-account-center">账户与备份 ›</button>
+            </div>
+
+            <div class="form-grid-2">
+              <div class="field">
+                <label class="field-label" for="input-set-name">显示昵称</label>
+                <input id="input-set-name" class="input" type="text" required maxlength="16" value="${esc(user.name)}" placeholder="例如：MING" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="input-set-avatar">头像字 / 表情</label>
+                <input id="input-set-avatar" class="input" type="text" maxlength="2" value="${esc(user.avatar)}" placeholder="留空取首字" />
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="field-label">头像主题色</label>
+              <div class="settings-color-row" id="settings-color-row">
+                ${SYSTEM_COLORS.map((c) => `
+                  <button type="button" class="settings-color-dot ${c.toLowerCase() === String(pickedColor).toLowerCase() ? 'is-selected' : ''}" data-set-color="${c}" style="background:${c};" aria-label="选择颜色 ${c}"></button>
+                `).join('')}
+              </div>
+            </div>
+
+            <div class="field" style="margin-bottom:0;">
+              <label class="field-label" for="input-set-pwd">修改登录密码（选填，留空则不修改）</label>
+              <input id="input-set-pwd" class="input" type="password" minlength="4" autocomplete="new-password" placeholder="输入 4 位以上新密码…" />
+            </div>
+          </div>
+
+          <div class="modal-group-title">页面主题与外观</div>
+          <div class="modal-group-card">
+            <div class="field">
+              <label class="field-label">明暗外观模式</label>
+              <div class="segmented-control" style="width:100%;display:grid;grid-template-columns:1fr 1fr 1fr;">
+                <button type="button" class="seg-btn ${themeMode === 'light' ? 'is-active' : ''}" data-set-theme="light">浅色</button>
+                <button type="button" class="seg-btn ${themeMode === 'dark' ? 'is-active' : ''}" data-set-theme="dark">深色暗夜</button>
+                <button type="button" class="seg-btn ${themeMode === 'auto' ? 'is-active' : ''}" data-set-theme="auto">跟随系统</button>
+              </div>
+            </div>
+
+            <div class="field" style="margin-bottom:0;">
+              <label class="field-label">界面视觉风格包（随时无损切换）</label>
+              <div class="theme-pack-list">
+                ${packs.map((p) => `
+                  <button type="button" class="theme-pack-card ${state.stylePack === p.id ? 'is-selected' : ''}" data-set-style="${p.id}">
+                    <div class="theme-pack-swatch" style="background:${p.swatchBg}">${p.swatchIcon}</div>
+                    <div class="theme-pack-info">
+                      <div class="theme-pack-name">
+                        <span>${esc(p.name)}</span>
+                        <span class="meta-tag">${esc(p.badge)}</span>
+                      </div>
+                      <div class="theme-pack-desc">${esc(p.desc)}</div>
+                    </div>
+                    ${state.stylePack === p.id ? '<span class="account-check">使用中</span>' : ''}
+                  </button>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-group-title">入场动画调控（方案 A · Apple 极光）</div>
+          <div class="modal-group-card">
+            <div class="settings-row-item">
+              <div>
+                <div style="font-size:14px;font-weight:600;">开启 Apple 极光入场动画</div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">全新打开 App 或登录时播放一次，轻触可跳过</div>
+              </div>
+              <button type="button" id="switch-set-intro" class="ios-switch ${introEnabled ? 'is-on' : ''}" role="switch" aria-checked="${introEnabled}"></button>
+            </div>
+
+            <div class="field" style="margin-top:12px;margin-bottom:10px;">
+              <label class="field-label" for="input-set-intro-sub">自定义入场问候语（选填，留空则按早/午/晚智能问候）</label>
+              <input id="input-set-intro-sub" class="input" type="text" maxlength="32" value="${esc(state.prefs.introSubtitle || '')}" placeholder="例如：今天想学点什么？ / 保持节奏，稳步上岸" />
+            </div>
+
+            <button type="button" id="btn-preview-apple-intro" class="btn-secondary btn-block" style="color:var(--accent);">
+              ▶ 立即预览入场动画效果
+            </button>
+          </div>
+
+          <div class="modal-group-title">学习习惯与省流同步调控</div>
+          <div class="modal-group-card">
+            <div class="field">
+              <label class="field-label">一键记错题默认模式</label>
+              <div class="segmented-control" style="width:100%;display:grid;grid-template-columns:1fr 1fr;">
+                <button type="button" class="seg-btn ${defaultMistakeKind === 'wrong_question' ? 'is-active' : ''}" data-set-mkind="wrong_question">错题订正</button>
+                <button type="button" class="seg-btn ${defaultMistakeKind === 'knowledge_point' ? 'is-active' : ''}" data-set-mkind="knowledge_point">错误知识点</button>
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="field-label">专注计时默认时长</label>
+              <div class="chip-row">
+                ${[15, 25, 45, 60].map((m) => `
+                  <button type="button" class="choice-chip ${defaultFocusMin === m ? 'is-selected' : ''}" data-set-focus="${m}">${m} 分钟</button>
+                `).join('')}
+              </div>
+            </div>
+
+            ${state.mode === 'supabase' ? `
+              <div class="settings-row-item" style="padding-bottom:0;border-bottom:none;">
+                <div>
+                  <div style="font-size:14px;font-weight:600;">智能省流自动云同步</div>
+                  <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">关闭后仅在手动点「立即同步」时联网，后台零流量</div>
+                </div>
+                <button type="button" id="switch-set-cloud-auto" class="ios-switch ${cloudAuto ? 'is-on' : ''}" role="switch" aria-checked="${cloudAuto}"></button>
+              </div>
+            ` : ''}
+          </div>
+
+          <button type="submit" id="btn-save-settings" class="btn-primary btn-block" style="margin-top:6px;">保存全部设置</button>
+        </form>
+      `
+    });
+
+    const avatarPreview = document.getElementById('settings-avatar-preview');
+    const namePreview = document.getElementById('settings-name-preview');
+    const nameInput = document.getElementById('input-set-name');
+    const avatarInput = document.getElementById('input-set-avatar');
+    const pwdInput = document.getElementById('input-set-pwd');
+    const introSubInput = document.getElementById('input-set-intro-sub');
+
+    function updatePreviewBadge() {
+      const n = nameInput.value.trim() || user.name;
+      const av = Array.from(avatarInput.value.trim()).slice(0, 2).join('') || n.slice(0, 1).toUpperCase();
+      namePreview.textContent = n;
+      avatarPreview.textContent = av;
+      avatarPreview.style.background = pickedColor;
+    }
+
+    nameInput.addEventListener('input', updatePreviewBadge);
+    avatarInput.addEventListener('input', updatePreviewBadge);
+
+    modalPage.querySelectorAll('[data-set-color]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        pickedColor = btn.dataset.setColor;
+        modalPage.querySelectorAll('[data-set-color]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+        updatePreviewBadge();
+      });
+    });
+
+    modalPage.querySelectorAll('[data-set-theme]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        themeMode = btn.dataset.setTheme;
+        applyTheme(themeMode);
+        modalPage.querySelectorAll('[data-set-theme]').forEach((b) => b.classList.toggle('is-active', b === btn));
+        if (state.activeTab === 'desktop' && state.data && state.data.user) renderView(false);
+        showHud(themeMode === 'auto' ? '外观已设为跟随系统' : (themeMode === 'dark' ? '已切换为深色暗夜' : '已切换为浅色模式'));
+      });
+    });
+
+    modalPage.querySelectorAll('[data-set-style]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const nextPack = btn.dataset.setStyle;
+        applyStylePack(nextPack);
+        syncHeader();
+        renderView(false);
+        modalPage.querySelectorAll('[data-set-style]').forEach((b) => {
+          const sel = b.dataset.setStyle === nextPack;
+          b.classList.toggle('is-selected', sel);
+          const chk = b.querySelector('.account-check');
+          if (sel && !chk) {
+            const span = document.createElement('span');
+            span.className = 'account-check';
+            span.textContent = '使用中';
+            b.appendChild(span);
+          } else if (!sel && chk) {
+            chk.remove();
+          }
+        });
+        showHud(`已切换为「${STYLE_PACKS[nextPack].name}」主题`);
+      });
+    });
+
+    const swIntro = document.getElementById('switch-set-intro');
+    swIntro.addEventListener('click', () => {
+      introEnabled = !introEnabled;
+      saveUserPrefs({ introEnabled });
+      swIntro.classList.toggle('is-on', introEnabled);
+      swIntro.setAttribute('aria-checked', String(introEnabled));
+      showHud(introEnabled ? '已开启 Apple 极光入场动画' : '已关闭入场动画，下次将直接进入首页');
+    });
+
+    document.getElementById('btn-preview-apple-intro').addEventListener('click', () => {
+      blurActiveInput();
+      saveUserPrefs({ introSubtitle: introSubInput.value.trim().slice(0, 32) });
+      closeSheet();
+      setTimeout(() => playAppleIntroAnimation({ force: true }), 80);
+    });
+
+    modalPage.querySelectorAll('[data-set-mkind]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        defaultMistakeKind = btn.dataset.setMkind;
+        saveUserPrefs({ defaultMistakeKind });
+        modalPage.querySelectorAll('[data-set-mkind]').forEach((b) => b.classList.toggle('is-active', b === btn));
+        showHud(`默认录入模式已设为「${defaultMistakeKind === 'wrong_question' ? '错题订正' : '错误知识点'}」`);
+      });
+    });
+
+    modalPage.querySelectorAll('[data-set-focus]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        defaultFocusMin = Number(btn.dataset.setFocus) || 25;
+        saveUserPrefs({ defaultFocusMin });
+        if (!state.focus.running) {
+          state.focus.presetMin = defaultFocusMin;
+          state.focus.remainingSec = defaultFocusMin * 60;
+        }
+        modalPage.querySelectorAll('[data-set-focus]').forEach((b) => b.classList.toggle('is-selected', b === btn));
+        showHud(`专注默认时长已设为 ${defaultFocusMin} 分钟`);
+      });
+    });
+
+    const swCloud = document.getElementById('switch-set-cloud-auto');
+    if (swCloud) {
+      swCloud.addEventListener('click', () => {
+        cloudAuto = !cloudAuto;
+        setCloudSyncPolicy(cloudAuto ? 'auto' : 'manual');
+        swCloud.classList.toggle('is-on', cloudAuto);
+        swCloud.setAttribute('aria-checked', String(cloudAuto));
+        showHud(cloudAuto ? '已开启智能省流自动同步' : '已切换为仅手动同步（后台零流量）', 'var(--accent)');
+      });
+    }
+
+    document.getElementById('form-settings-center').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (saving) return;
+      blurActiveInput();
+      const nextName = nameInput.value.trim();
+      const nextAvatar = avatarInput.value.trim();
+      const nextPwd = pwdInput.value;
+      const nextSub = introSubInput.value.trim().slice(0, 32);
+      if (!nextName) { showHud('请填写显示昵称', 'var(--orange)'); return; }
+      if (nextPwd && nextPwd.length < 4) { showHud('新密码至少需要 4 位', 'var(--orange)'); return; }
+
+      saving = true;
+      saveUserPrefs({
+        introEnabled,
+        introSubtitle: nextSub,
+        themeMode,
+        defaultMistakeKind,
+        defaultFocusMin
+      });
+
+      try {
+        await api(`/api/users/${user.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            name: nextName,
+            avatar: nextAvatar,
+            color: pickedColor,
+            newPassword: nextPwd || ''
+          })
+        });
+        closeSheet();
+        await loadBootstrap(true);
+        showHud(nextPwd ? '账户资料、密码与偏好设置已保存' : '账户资料与个性化设置已保存', 'var(--green)');
+      } catch (err) {
+        showHud(err.message || '保存失败', 'var(--red)');
+      } finally {
+        saving = false;
+      }
+    });
+  }
+
   function openAccountSheet() {
     if (!state.data || !state.data.user) return;
     const { user, users } = state.data;
@@ -4341,6 +4867,18 @@ Script.complete();`;
           <span style="color:var(--text-tertiary);">升级不丢数据</span>
         </div>
       </div>
+
+      <div class="field-label" style="margin-bottom:8px;">账户资料、主题与入场动画设置</div>
+      <button type="button" class="account-row" data-action="open-settings" style="margin-bottom:14px;">
+        <div class="account-left">
+          <span class="theme-pack-swatch" style="width:32px;height:32px;border-radius:9px;font-size:15px;background:${getPack().swatchBg}">⚙</span>
+          <div style="text-align:left;">
+            <div style="font-size:14px;font-weight:600;">个性化与账户设置中心</div>
+            <div style="font-size:11px;color:var(--text-secondary);">修改昵称/头像/密码 · 页面主题 · 入场动画（${state.prefs.introEnabled ? '开' : '关'}）</div>
+          </div>
+        </div>
+        <span style="font-size:12px;color:var(--accent);font-weight:600;">设置 ›</span>
+      </button>
 
       <div class="field-label" style="margin-bottom:8px;">界面主题与专属话术</div>
       <button type="button" class="account-row" data-action="open-style-packs" style="margin-bottom:14px;">
@@ -4687,7 +5225,9 @@ Script.complete();`;
     let taskType = isEdit ? (isReviewTask(existingTask) ? 'review' : 'normal') : (defaultType === 'review' ? 'review' : 'normal');
     let mistakeKind = isEdit && isReviewTask(existingTask)
       ? getMistakeKind(existingTask)
-      : (state.mistakeKindFilter === 'wrong_question' ? 'wrong_question' : 'knowledge_point');
+      : (state.mistakeKindFilter === 'wrong_question'
+        ? 'wrong_question'
+        : (state.mistakeKindFilter === 'knowledge_point' ? 'knowledge_point' : state.prefs.defaultMistakeKind));
     const initialDate = isEdit
       ? existingTask.date
       : (taskType === 'review' ? tomorrowKey() : state.selectedDate);
@@ -5096,7 +5636,9 @@ Script.complete();`;
       || (cats[0] ? cats[0].name : '错题精练');
     let selectedKind = (defaultKind === 'wrong_question' || defaultKind === 'knowledge_point')
       ? defaultKind
-      : (state.mistakeKindFilter === 'wrong_question' ? 'wrong_question' : 'knowledge_point');
+      : (state.mistakeKindFilter === 'wrong_question'
+        ? 'wrong_question'
+        : (state.mistakeKindFilter === 'knowledge_point' ? 'knowledge_point' : state.prefs.defaultMistakeKind));
     let selectedReason = '';
     let selectedPreset = 'ebbinghaus';
     let submitting = false;
@@ -6548,6 +7090,11 @@ Script.complete();`;
     applyTheme(state.theme === 'dark' ? 'light' : 'dark');
     if (state.activeTab === 'desktop' && state.data && state.data.user) renderView(false);
   });
+  const navSettingsBtn = document.getElementById('nav-settings-btn');
+  if (navSettingsBtn) navSettingsBtn.addEventListener('click', () => {
+    if (state.data && state.data.user) openSettingsSheet();
+    else openStylePackSheet();
+  });
 
   fabAdd.addEventListener('click', () => {
     if (!state.data || !state.data.user) return;
@@ -6568,6 +7115,8 @@ Script.complete();`;
     const action = btn.dataset.action;
 
     if (action === 'close-sheet') { e.preventDefault(); e.stopPropagation(); return closeSheet(); }
+    if (action === 'open-settings') { closeSheet(); return openSettingsSheet(); }
+    if (action === 'open-account-center') { closeSheet(); return openAccountSheet(); }
     if (action === 'open-style-packs') return openStylePackSheet();
     if (action === 'open-add-task') return openTaskEditorSheet(null, '', 'normal');
     if (action === 'open-add-review') return openQuickMistakeModal();
@@ -7083,7 +7632,7 @@ Script.complete();`;
   }
 
   applyStylePack(state.stylePack);
-  applyTheme(state.theme);
+  applyTheme(state.prefs.themeMode);
   checkWeChatBrowser();
   parseUrlActions();
   checkOfflineCacheStatus();
@@ -7094,6 +7643,8 @@ Script.complete();`;
       const inv = state.pendingInvite;
       state.pendingInvite = null;
       setTimeout(() => openJoinGroupSheet(inv.code, inv.sharedGroup), 350);
+    } else if (state.data && state.data.user) {
+      playAppleIntroAnimation({ force: false });
     }
   });
 })();

@@ -603,6 +603,32 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { user: sanitizeUser(user), bootstrap: buildBootstrap(user.id) });
     }
 
+    const userMatch = pathname.match(/^\/api\/users\/([^/]+)$/);
+    if (userMatch && method === 'PATCH') {
+      const body = await parseBody(req);
+      const user = store.users.find((u) => u.id === userMatch[1]);
+      if (!user) return sendJSON(res, 404, { error: '账户不存在' });
+      if (typeof body.name === 'string') {
+        const cleanName = body.name.trim().slice(0, 16);
+        if (!cleanName) return sendJSON(res, 400, { error: '显示昵称不能为空' });
+        user.name = cleanName;
+      }
+      if (typeof body.avatar === 'string') {
+        const cleanAvatar = Array.from(body.avatar.trim()).slice(0, 2).join('');
+        user.avatar = cleanAvatar || user.name.slice(0, 1).toUpperCase();
+      }
+      if (typeof body.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(body.color.trim())) {
+        user.color = body.color.trim();
+      }
+      if (typeof body.newPassword === 'string' && body.newPassword.length > 0) {
+        if (body.newPassword.length < 4) return sendJSON(res, 400, { error: '新密码至少需要 4 位' });
+        user.passwordHash = hashPassword(user.account, body.newPassword);
+      }
+      saveStore();
+      broadcast('sync', { reason: 'user_updated', userId: user.id });
+      return sendJSON(res, 200, { user: sanitizeUser(user) });
+    }
+
     // Import unified account backup snapshot (merge / restore safely)
     if (method === 'POST' && pathname === '/api/account/import') {
       const body = await parseBody(req);
