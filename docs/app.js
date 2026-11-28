@@ -1084,15 +1084,21 @@
       .slice(-60);
   }
 
-  function applyRemoteGroupRowToStore(s, rg, myUserId) {
+  function applyRemoteGroupRowToStore(s, rg, myUserId, { preserveMyMembership = false } = {}) {
     if (!rg || !rg.id) return null;
     const oldIdx = s.groups.findIndex((x) => x.id === rg.id || (rg.invite_code && x.inviteCode === rg.invite_code));
     const oldGrp = oldIdx >= 0 ? s.groups[oldIdx] : null;
     const oldId = oldGrp ? oldGrp.id : rg.id;
 
     const remoteMemberIds = Array.isArray(rg.member_ids) ? rg.member_ids : [];
+    const remoteSnapKeys = rg.member_snapshots && typeof rg.member_snapshots === 'object' ? Object.keys(rg.member_snapshots) : [];
+    const mergedMemberIds = Array.from(new Set([...remoteMemberIds, ...remoteSnapKeys].filter(Boolean)));
+    if (preserveMyMembership && myUserId && !mergedMemberIds.includes(myUserId)) {
+      mergedMemberIds.push(myUserId);
+    }
+
     const mergedSnaps = { ...(oldGrp && oldGrp.memberSnapshots ? oldGrp.memberSnapshots : {}), ...(rg.member_snapshots || {}) };
-    if (myUserId && remoteMemberIds.includes(myUserId)) {
+    if (myUserId && mergedMemberIds.includes(myUserId)) {
       const mySnap = buildMyMemberSnapshot(s, myUserId);
       if (mySnap) mergedSnaps[myUserId] = mySnap;
     }
@@ -1105,7 +1111,7 @@
       targetDate: rg.target_date,
       notice: rg.notice,
       ownerId: rg.owner_id,
-      memberIds: Array.from(new Set(remoteMemberIds)),
+      memberIds: mergedMemberIds,
       memberSnapshots: mergedSnaps,
       createdAt: (oldGrp && oldGrp.createdAt) || Number(rg.updated_at) || Date.now(),
       remoteUpdatedAt: Number(rg.updated_at) || Date.now()
@@ -1125,6 +1131,45 @@
     return mergedGrp;
   }
 
+  // Hydrate profile snapshots for any memberIds missing from memberSnapshots (even if they have 0 tasks / 0 progress!)
+  async function hydrateMissingMemberSnapshots(s, memberIds = [], snaps = {}) {
+    if (state.mode !== 'supabase' || !getSupabaseConfig() || !navigator.onLine) return false;
+    const missing = (Array.isArray(memberIds) ? memberIds : []).filter((uid) => {
+      if (!uid) return false;
+      if (s.users.some((u) => u.id === uid)) return false;
+      const existing = snaps && snaps[uid];
+      return !existing || !existing.name;
+    });
+    if (!missing.length) return false;
+    try {
+      const inList = missing.map((id) => `"${String(id).replace(/"/g, '')}"`).join(',');
+      const rows = await sbFetch(`shixu_accounts?user_id=in.(${encodeURIComponent(inList)})&select=user_id,account,name,avatar,color,streak`);
+      if (!Array.isArray(rows) || !rows.length) return false;
+      let filled = false;
+      const today = todayKey();
+      for (const r of rows) {
+        if (!r || !r.user_id) continue;
+        const prev = snaps[r.user_id] || {};
+        snaps[r.user_id] = {
+          id: r.user_id,
+          account: r.account || prev.account || '',
+          name: r.name || prev.name || '小组成员',
+          avatar: r.avatar || prev.avatar || (r.name ? r.name.slice(0, 1) : '友'),
+          color: r.color || prev.color || '#0071E3',
+          streak: Number(r.streak) || 0,
+          done: prev.date === today ? (Number(prev.done) || 0) : 0,
+          total: prev.date === today ? (Number(prev.total) || 0) : 0,
+          pct: prev.date === today ? (Number(prev.pct) || 0) : 0,
+          date: prev.date || today
+        };
+        filled = true;
+      }
+      return filled;
+    } catch {
+      return false;
+    }
+  }
+
   async function broadcastGroupUpdate(groupId, updatedAt, fromUserId, preview = '') {
     const cfg = getSupabaseConfig();
     if (!cfg || !navigator.onLine || !groupId) return;
@@ -1140,43 +1185,53 @@
   }
 
   // Conflict-free Read-Merge-Write for a single group: NEVER overwrites another member's join, snapshot, or messages!
-  async function mergeAndPushGroupToSupabase(groupId, userId, { broadcastPreview = '', leaveUserId = '' } = {}) {
+  async function mergeAndPushGroupToSupabase(groupId, userId, { broadcastPreview = '', leaveUserId = '', inviteCode = '' } = {}) {
     if (state.mode !== 'supabase' || !getSupabaseConfig() || !navigator.onLine) return null;
     const s = getLocalStore();
-    const localGrp = s.groups.find((g) => g.id === groupId);
-    if (!localGrp && !leaveUserId) return null;
+    const cleanCode = String(inviteCode || '').trim().toUpperCase();
+    const localGrp = s.groups.find((g) => g.id === groupId || (cleanCode && g.inviteCode === cleanCode));
+    const effectiveCode = cleanCode || (localGrp && localGrp.inviteCode) || '';
 
     // Fetch latest remote row by id OR invite_code (auto-heals any split invite-code groups!)
     let remoteRow = null;
     try {
-      const byId = await sbFetch(`shixu_groups?id=eq.${encodeURIComponent(groupId)}&select=*`);
-      if (byId && byId[0]) remoteRow = byId[0];
-      else if (localGrp && localGrp.inviteCode) {
-        const byCode = await sbFetch(`shixu_groups?invite_code=eq.${encodeURIComponent(localGrp.inviteCode)}&select=*`);
+      if (groupId) {
+        const byId = await sbFetch(`shixu_groups?id=eq.${encodeURIComponent(groupId)}&select=*`);
+        if (byId && byId[0]) remoteRow = byId[0];
+      }
+      if (!remoteRow && effectiveCode) {
+        const byCode = await sbFetch(`shixu_groups?invite_code=eq.${encodeURIComponent(effectiveCode)}&select=*`);
         if (byCode && byCode[0]) remoteRow = byCode[0];
       }
     } catch {}
 
+    if (!localGrp && !remoteRow && !leaveUserId) return null;
+
     const canonicalId = remoteRow ? remoteRow.id : (localGrp ? localGrp.id : groupId);
     const oldId = localGrp ? localGrp.id : canonicalId;
-
-    let mergedMemberIds = Array.from(new Set([
-      ...(remoteRow && Array.isArray(remoteRow.member_ids) ? remoteRow.member_ids : []),
-      ...(localGrp && Array.isArray(localGrp.memberIds) ? localGrp.memberIds : [])
-    ]));
-    if (leaveUserId) mergedMemberIds = mergedMemberIds.filter((id) => id !== leaveUserId);
-    else if (userId && !mergedMemberIds.includes(userId)) mergedMemberIds.push(userId);
 
     const mergedSnaps = {
       ...(remoteRow && remoteRow.member_snapshots ? remoteRow.member_snapshots : {}),
       ...(localGrp && localGrp.memberSnapshots ? localGrp.memberSnapshots : {})
     };
+
+    let mergedMemberIds = Array.from(new Set([
+      ...(remoteRow && Array.isArray(remoteRow.member_ids) ? remoteRow.member_ids : []),
+      ...(localGrp && Array.isArray(localGrp.memberIds) ? localGrp.memberIds : []),
+      ...Object.keys(mergedSnaps)
+    ].filter(Boolean)));
+
     if (leaveUserId) {
+      mergedMemberIds = mergedMemberIds.filter((id) => id !== leaveUserId);
       delete mergedSnaps[leaveUserId];
     } else if (userId) {
+      if (!mergedMemberIds.includes(userId)) mergedMemberIds.push(userId);
       const mySnap = buildMyMemberSnapshot(s, userId);
       if (mySnap) mergedSnaps[userId] = mySnap;
     }
+
+    // Ensure every member in mergedMemberIds has a real display profile (even with 0 tasks / 0 progress)
+    await hydrateMissingMemberSnapshots(s, mergedMemberIds, mergedSnaps);
 
     const localFeeds = s.feeds.filter((f) => f.groupId === canonicalId || (oldId !== canonicalId && f.groupId === oldId));
     const mergedFeeds = mergeFeedsList(remoteRow ? remoteRow.feeds : [], localFeeds, canonicalId);
@@ -1184,7 +1239,7 @@
 
     const rowToSave = {
       id: canonicalId,
-      invite_code: (remoteRow && remoteRow.invite_code) || (localGrp && localGrp.inviteCode) || genInviteCode(),
+      invite_code: (remoteRow && remoteRow.invite_code) || effectiveCode || genInviteCode(),
       name: (localGrp && localGrp.name) || (remoteRow && remoteRow.name) || '学习小组',
       exam_name: (localGrp && localGrp.examName) || (remoteRow && remoteRow.exam_name) || '共同目标',
       target_date: (localGrp && localGrp.targetDate) || (remoteRow && remoteRow.target_date) || addDaysStr(60),
@@ -1205,7 +1260,7 @@
 
     // Save merged remote state back into local store without re-triggering push loop
     if (!leaveUserId) {
-      applyRemoteGroupRowToStore(s, rowToSave, userId);
+      applyRemoteGroupRowToStore(s, rowToSave, userId, { preserveMyMembership: true });
       memoryVaultFallback = s;
       safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
       idbSet('vault', s);
@@ -1223,9 +1278,10 @@
     for (const g of myGroups) {
       const gFeeds = s.feeds.filter((f) => f.groupId === g.id);
       const lastFeedId = gFeeds.length ? gFeeds[gFeeds.length - 1].id : '';
-      const fp = JSON.stringify({ snap: mySnap, cnt: gFeeds.length, last: lastFeedId, mCnt: g.memberIds.length });
-      if (lastGroupPushFp.get(g.id) === fp) continue;
-      const saved = await mergeAndPushGroupToSupabase(g.id, userId).catch(() => null);
+      const hasMySnap = Boolean(g.memberSnapshots && g.memberSnapshots[userId]);
+      const fp = JSON.stringify({ snap: mySnap, cnt: gFeeds.length, last: lastFeedId, mCnt: g.memberIds.length, hasMySnap });
+      if (hasMySnap && g.remoteUpdatedAt && lastGroupPushFp.get(g.id) === fp) continue;
+      const saved = await mergeAndPushGroupToSupabase(g.id, userId, { inviteCode: g.inviteCode }).catch(() => null);
       if (saved) lastGroupPushFp.set(saved.id, fp);
     }
   }
@@ -1259,14 +1315,15 @@
     if (!force && !onlyGroupId && now - lastGroupProbeAt < 4000) return false;
     if (!onlyGroupId) lastGroupProbeAt = now;
 
-    const s = getLocalStore();
+    let s = getLocalStore();
     let changed = false;
 
     try {
       if (onlyGroupId) {
         const rows = await sbFetch(`shixu_groups?id=eq.${encodeURIComponent(onlyGroupId)}&select=*`);
         if (rows && rows[0]) {
-          applyRemoteGroupRowToStore(s, rows[0], state.userId);
+          const grp = applyRemoteGroupRowToStore(s, rows[0], state.userId);
+          if (grp) await hydrateMissingMemberSnapshots(s, grp.memberIds, grp.memberSnapshots);
           changed = true;
         }
       } else {
@@ -1284,19 +1341,21 @@
           }
         }
 
-        // Auto-heal: if local has a group whose invite_code wasn't in member_ids yet, probe by invite_code
+        // Auto-heal: if local has a group whose invite_code wasn't in cloud member_ids yet, merge-push BEFORE rendering so we are NEVER dropped!
         const myLocalGroups = s.groups.filter((g) => g.memberIds.includes(state.userId));
+        const me = s.users.find((u) => u.id === state.userId);
         for (const lg of myLocalGroups) {
           if (lg.inviteCode && !seenCodes.has(lg.inviteCode)) {
             const byCode = await sbFetch(`shixu_groups?invite_code=eq.${encodeURIComponent(lg.inviteCode)}&select=*`).catch(() => []);
-            if (byCode && byCode[0]) {
-              applyRemoteGroupRowToStore(s, byCode[0], state.userId);
+            const targetId = byCode && byCode[0] ? byCode[0].id : lg.id;
+            const healed = await mergeAndPushGroupToSupabase(targetId, state.userId, {
+              inviteCode: lg.inviteCode,
+              broadcastPreview: byCode && byCode[0] ? `${me ? me.name : '新成员'} 加入了小组` : ''
+            }).catch(() => null);
+            if (healed) {
+              s = getLocalStore();
+              seenCodes.add(lg.inviteCode);
               changed = true;
-              // Re-merge to ensure we are included in member_ids on cloud too
-              mergeAndPushGroupToSupabase(byCode[0].id, state.userId).catch(() => {});
-            } else {
-              // Local group never pushed yet -> push it now!
-              mergeAndPushGroupToSupabase(lg.id, state.userId).catch(() => {});
             }
           }
         }
@@ -1304,9 +1363,17 @@
         for (const gid of toFetchIds) {
           const rows = await sbFetch(`shixu_groups?id=eq.${encodeURIComponent(gid)}&select=*`);
           if (rows && rows[0]) {
-            applyRemoteGroupRowToStore(s, rows[0], state.userId);
+            const grp = applyRemoteGroupRowToStore(s, rows[0], state.userId);
+            if (grp) await hydrateMissingMemberSnapshots(s, grp.memberIds, grp.memberSnapshots);
             changed = true;
           }
+        }
+
+        // Also hydrate any local group that has memberIds missing snapshots
+        for (const lg of s.groups.filter((g) => g.memberIds.includes(state.userId))) {
+          if (!lg.memberSnapshots) lg.memberSnapshots = {};
+          const filled = await hydrateMissingMemberSnapshots(s, lg.memberIds, lg.memberSnapshots);
+          if (filled) changed = true;
         }
       }
 
@@ -1498,7 +1565,8 @@
     for (const rg of myGroups || []) {
       const mIds = Array.isArray(rg.member_ids) ? rg.member_ids : [];
       if (!mIds.includes(hydratedUser.id)) continue;
-      applyRemoteGroupRowToStore(s, rg, hydratedUser.id);
+      const grp = applyRemoteGroupRowToStore(s, rg, hydratedUser.id);
+      if (grp) await hydrateMissingMemberSnapshots(s, grp.memberIds, grp.memberSnapshots);
     }
 
     memoryVaultFallback = s;
@@ -1543,6 +1611,7 @@
 
       if (remoteTs > lastRemoteTs && remoteTs > 0) {
         await pullAccountFromSupabase(localUser.account, null);
+        await syncGroupsLightweight({ force: true, silent: true });
         applyBootstrapData(buildLocalBootstrap(state.userId), false);
         if (!silent) showHud('已从云端拉取其他设备最新进度', 'var(--green)');
         return { status: 'pulled' };
@@ -1619,7 +1688,11 @@
     const groups = s.groups
       .filter((g) => g.memberIds.includes(user.id))
       .map((g) => {
-        const members = g.memberIds.map((uid) => {
+        const uniqueMemberIds = Array.from(new Set([
+          ...(Array.isArray(g.memberIds) ? g.memberIds : []),
+          ...Object.keys(g.memberSnapshots || {})
+        ].filter(Boolean)));
+        const members = uniqueMemberIds.map((uid, idx) => {
           const localU = s.users.find((u) => u.id === uid);
           if (localU) {
             const uTasks = s.tasks.filter((t) => t.userId === uid);
@@ -1632,10 +1705,32 @@
           const snap = g.memberSnapshots && g.memberSnapshots[uid];
           if (snap) {
             const sameDay = snap.date === today;
-            return { ...snap, done: sameDay ? snap.done : 0, pct: sameDay ? snap.pct : 0 };
+            const safeName = snap.name || '小组成员';
+            return {
+              id: uid,
+              account: snap.account || '',
+              name: safeName,
+              avatar: snap.avatar || safeName.slice(0, 1),
+              color: snap.color || SYSTEM_COLORS[idx % SYSTEM_COLORS.length],
+              streak: Number(snap.streak) || 0,
+              done: sameDay ? (Number(snap.done) || 0) : 0,
+              total: sameDay ? (Number(snap.total) || 0) : 0,
+              pct: sameDay ? (Number(snap.pct) || 0) : 0
+            };
           }
-          return null;
-        }).filter(Boolean);
+          // Even if a peer has 0 tasks / no progress / snapshot not yet hydrated, ALWAYS display them in the member list!
+          return {
+            id: uid,
+            account: '',
+            name: '小组成员',
+            avatar: '友',
+            color: SYSTEM_COLORS[idx % SYSTEM_COLORS.length],
+            streak: 0,
+            done: 0,
+            total: 0,
+            pct: 0
+          };
+        });
 
         const totalTasks = members.reduce((a, m) => a + m.total, 0);
         const doneTasks = members.reduce((a, m) => a + m.done, 0);
@@ -3685,7 +3780,7 @@ Script.complete();`;
                   <span class="member-avatar-inner" style="background:${m.color || 'var(--accent)'}">${esc(m.avatar)}</span>
                 </div>
                 <div class="member-name">${m.id === user.id ? '我' : esc(m.name)}</div>
-                <div class="member-ratio tabular">${m.done}/${m.total}</div>
+                <div class="member-ratio tabular">${m.total > 0 ? `${m.done}/${m.total}` : '暂无进度'}</div>
               </button>
             `).join('')}
           </div>
