@@ -1038,33 +1038,430 @@
     return nowTs;
   }
 
+  function buildMyMemberSnapshot(s, userId) {
+    const user = s.users.find((u) => u.id === userId);
+    if (!user) return null;
+    const today = todayKey();
+    const uTasks = s.tasks.filter((t) => t.userId === userId);
+    const mySt = getDayStats(uTasks, today);
+    return {
+      id: user.id,
+      account: user.account,
+      name: user.name,
+      avatar: user.avatar,
+      color: user.color,
+      streak: computeRealStreak(uTasks),
+      done: mySt.done,
+      total: mySt.total,
+      pct: mySt.pct,
+      date: today
+    };
+  }
+
+  function mergeFeedsList(remoteFeeds = [], localFeeds = [], groupId = '') {
+    const map = new Map();
+    const ingest = (list) => {
+      for (const f of Array.isArray(list) ? list : []) {
+        if (!f || !f.id) continue;
+        const gid = groupId || f.groupId;
+        const prev = map.get(f.id);
+        if (!prev) {
+          map.set(f.id, {
+            ...f,
+            groupId: gid,
+            likedBy: Array.isArray(f.likedBy) ? Array.from(new Set(f.likedBy)) : []
+          });
+        } else {
+          prev.likedBy = Array.from(new Set([...(prev.likedBy || []), ...(Array.isArray(f.likedBy) ? f.likedBy : [])]));
+          if ((f.createdAt || 0) > (prev.createdAt || 0)) prev.createdAt = f.createdAt;
+        }
+      }
+    };
+    ingest(remoteFeeds);
+    ingest(localFeeds);
+    return Array.from(map.values())
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+      .slice(-60);
+  }
+
+  function applyRemoteGroupRowToStore(s, rg, myUserId) {
+    if (!rg || !rg.id) return null;
+    const oldIdx = s.groups.findIndex((x) => x.id === rg.id || (rg.invite_code && x.inviteCode === rg.invite_code));
+    const oldGrp = oldIdx >= 0 ? s.groups[oldIdx] : null;
+    const oldId = oldGrp ? oldGrp.id : rg.id;
+
+    const remoteMemberIds = Array.isArray(rg.member_ids) ? rg.member_ids : [];
+    const mergedSnaps = { ...(oldGrp && oldGrp.memberSnapshots ? oldGrp.memberSnapshots : {}), ...(rg.member_snapshots || {}) };
+    if (myUserId && remoteMemberIds.includes(myUserId)) {
+      const mySnap = buildMyMemberSnapshot(s, myUserId);
+      if (mySnap) mergedSnaps[myUserId] = mySnap;
+    }
+
+    const mergedGrp = {
+      id: rg.id,
+      inviteCode: rg.invite_code,
+      name: rg.name,
+      examName: rg.exam_name,
+      targetDate: rg.target_date,
+      notice: rg.notice,
+      ownerId: rg.owner_id,
+      memberIds: Array.from(new Set(remoteMemberIds)),
+      memberSnapshots: mergedSnaps,
+      createdAt: (oldGrp && oldGrp.createdAt) || Number(rg.updated_at) || Date.now(),
+      remoteUpdatedAt: Number(rg.updated_at) || Date.now()
+    };
+
+    if (oldIdx === -1) s.groups.push(mergedGrp);
+    else s.groups[oldIdx] = mergedGrp;
+
+    // Remap any local feeds from an old duplicate invite-code group ID to the canonical cloud ID
+    const localFeeds = s.feeds.filter((f) => f.groupId === rg.id || (oldId !== rg.id && f.groupId === oldId));
+    const mergedFeeds = mergeFeedsList(rg.feeds || [], localFeeds, rg.id);
+    s.feeds = s.feeds.filter((f) => f.groupId !== rg.id && f.groupId !== oldId).concat(mergedFeeds);
+
+    if (state.activeGroupId === oldId && oldId !== rg.id) {
+      state.activeGroupId = rg.id;
+    }
+    return mergedGrp;
+  }
+
+  async function broadcastGroupUpdate(groupId, updatedAt, fromUserId, preview = '') {
+    const cfg = getSupabaseConfig();
+    if (!cfg || !navigator.onLine || !groupId) return;
+    const payload = { groupId, updatedAt, fromUserId, preview: String(preview || '').slice(0, 60) };
+    // Send lightweight ~80-byte REST broadcast so peers viewing Group tab update in <150ms even if sender is on Today tab!
+    await fetch(`${cfg.url}/realtime/v1/api/broadcast`, {
+      method: 'POST',
+      headers: buildSupabaseHeaders(cfg.key),
+      body: JSON.stringify({
+        messages: [{ topic: `shixu_grp_${groupId}`, event: 'grp_updated', payload }]
+      })
+    }).catch(() => {});
+  }
+
+  // Conflict-free Read-Merge-Write for a single group: NEVER overwrites another member's join, snapshot, or messages!
+  async function mergeAndPushGroupToSupabase(groupId, userId, { broadcastPreview = '', leaveUserId = '' } = {}) {
+    if (state.mode !== 'supabase' || !getSupabaseConfig() || !navigator.onLine) return null;
+    const s = getLocalStore();
+    const localGrp = s.groups.find((g) => g.id === groupId);
+    if (!localGrp && !leaveUserId) return null;
+
+    // Fetch latest remote row by id OR invite_code (auto-heals any split invite-code groups!)
+    let remoteRow = null;
+    try {
+      const byId = await sbFetch(`shixu_groups?id=eq.${encodeURIComponent(groupId)}&select=*`);
+      if (byId && byId[0]) remoteRow = byId[0];
+      else if (localGrp && localGrp.inviteCode) {
+        const byCode = await sbFetch(`shixu_groups?invite_code=eq.${encodeURIComponent(localGrp.inviteCode)}&select=*`);
+        if (byCode && byCode[0]) remoteRow = byCode[0];
+      }
+    } catch {}
+
+    const canonicalId = remoteRow ? remoteRow.id : (localGrp ? localGrp.id : groupId);
+    const oldId = localGrp ? localGrp.id : canonicalId;
+
+    let mergedMemberIds = Array.from(new Set([
+      ...(remoteRow && Array.isArray(remoteRow.member_ids) ? remoteRow.member_ids : []),
+      ...(localGrp && Array.isArray(localGrp.memberIds) ? localGrp.memberIds : [])
+    ]));
+    if (leaveUserId) mergedMemberIds = mergedMemberIds.filter((id) => id !== leaveUserId);
+    else if (userId && !mergedMemberIds.includes(userId)) mergedMemberIds.push(userId);
+
+    const mergedSnaps = {
+      ...(remoteRow && remoteRow.member_snapshots ? remoteRow.member_snapshots : {}),
+      ...(localGrp && localGrp.memberSnapshots ? localGrp.memberSnapshots : {})
+    };
+    if (leaveUserId) {
+      delete mergedSnaps[leaveUserId];
+    } else if (userId) {
+      const mySnap = buildMyMemberSnapshot(s, userId);
+      if (mySnap) mergedSnaps[userId] = mySnap;
+    }
+
+    const localFeeds = s.feeds.filter((f) => f.groupId === canonicalId || (oldId !== canonicalId && f.groupId === oldId));
+    const mergedFeeds = mergeFeedsList(remoteRow ? remoteRow.feeds : [], localFeeds, canonicalId);
+    const nowTs = Date.now();
+
+    const rowToSave = {
+      id: canonicalId,
+      invite_code: (remoteRow && remoteRow.invite_code) || (localGrp && localGrp.inviteCode) || genInviteCode(),
+      name: (localGrp && localGrp.name) || (remoteRow && remoteRow.name) || '学习小组',
+      exam_name: (localGrp && localGrp.examName) || (remoteRow && remoteRow.exam_name) || '共同目标',
+      target_date: (localGrp && localGrp.targetDate) || (remoteRow && remoteRow.target_date) || addDaysStr(60),
+      notice: (localGrp && localGrp.notice) || (remoteRow && remoteRow.notice) || '每天按计划完成打卡，互相监督。',
+      owner_id: (remoteRow && remoteRow.owner_id) || (localGrp && localGrp.ownerId) || userId,
+      member_ids: mergedMemberIds,
+      member_snapshots: mergedSnaps,
+      feeds: mergedFeeds,
+      updated_at: nowTs
+    };
+
+    // Write back with 0-byte response body!
+    await sbFetch('shixu_groups?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(rowToSave)
+    });
+
+    // Save merged remote state back into local store without re-triggering push loop
+    if (!leaveUserId) {
+      applyRemoteGroupRowToStore(s, rowToSave, userId);
+      memoryVaultFallback = s;
+      safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
+      idbSet('vault', s);
+    }
+
+    // Fire ~80-byte Realtime Broadcast ping so active peers see the update immediately!
+    broadcastGroupUpdate(canonicalId, nowTs, userId || leaveUserId, broadcastPreview);
+    return rowToSave;
+  }
+
+  const lastGroupPushFp = new Map();
   async function pushUserGroupsToSupabase(s, userId) {
     const myGroups = s.groups.filter((g) => g.memberIds.includes(userId));
-    if (!myGroups.length) return;
-    const user = s.users.find((u) => u.id === userId);
-    if (!user) return;
-    const today = todayKey();
-    const mySt = getDayStats(s.tasks.filter((t) => t.userId === userId), today);
+    const mySnap = buildMyMemberSnapshot(s, userId);
     for (const g of myGroups) {
-      const snaps = { ...(g.memberSnapshots || {}) };
-      snaps[userId] = {
-        id: user.id, account: user.account, name: user.name, avatar: user.avatar, color: user.color,
-        streak: computeRealStreak(s.tasks.filter((t) => t.userId === userId)),
-        done: mySt.done, total: mySt.total, pct: mySt.pct, date: today
-      };
-      g.memberSnapshots = snaps;
-      await sbFetch('shixu_groups?on_conflict=id', {
-        method: 'POST',
-        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-        body: JSON.stringify({
-          id: g.id, invite_code: g.inviteCode, name: g.name, exam_name: g.examName,
-          target_date: g.targetDate, notice: g.notice, owner_id: g.ownerId,
-          member_ids: g.memberIds, member_snapshots: snaps,
-          feeds: s.feeds.filter((f) => f.groupId === g.id).slice(-40),
-          updated_at: Date.now()
-        })
-      });
+      const gFeeds = s.feeds.filter((f) => f.groupId === g.id);
+      const lastFeedId = gFeeds.length ? gFeeds[gFeeds.length - 1].id : '';
+      const fp = JSON.stringify({ snap: mySnap, cnt: gFeeds.length, last: lastFeedId, mCnt: g.memberIds.length });
+      if (lastGroupPushFp.get(g.id) === fp) continue;
+      const saved = await mergeAndPushGroupToSupabase(g.id, userId).catch(() => null);
+      if (saved) lastGroupPushFp.set(saved.id, fp);
     }
+  }
+
+  function refreshActiveGroupViewPreservingInput() {
+    if (!state.userId) return;
+    const input = document.getElementById('input-group-feed');
+    const wasFocused = Boolean(input && document.activeElement === input);
+    const draft = input ? input.value : '';
+    const selStart = wasFocused && typeof input.selectionStart === 'number' ? input.selectionStart : draft.length;
+
+    applyBootstrapData(buildLocalBootstrap(state.userId), false);
+
+    if (draft) {
+      const nextInput = document.getElementById('input-group-feed');
+      if (nextInput) {
+        nextInput.value = draft;
+        if (wasFocused) {
+          nextInput.focus();
+          try { nextInput.setSelectionRange(selStart, selStart); } catch {}
+        }
+      }
+    }
+  }
+
+  // Ultra-low-bandwidth group probe: checks ONLY (id, updated_at) (~45 bytes) and downloads ONLY changed groups!
+  let lastGroupProbeAt = 0;
+  async function syncGroupsLightweight({ force = false, onlyGroupId = '', silent = true } = {}) {
+    if (state.mode !== 'supabase' || !state.userId || !getSupabaseConfig() || !navigator.onLine) return false;
+    const now = Date.now();
+    if (!force && !onlyGroupId && now - lastGroupProbeAt < 4000) return false;
+    if (!onlyGroupId) lastGroupProbeAt = now;
+
+    const s = getLocalStore();
+    let changed = false;
+
+    try {
+      if (onlyGroupId) {
+        const rows = await sbFetch(`shixu_groups?id=eq.${encodeURIComponent(onlyGroupId)}&select=*`);
+        if (rows && rows[0]) {
+          applyRemoteGroupRowToStore(s, rows[0], state.userId);
+          changed = true;
+        }
+      } else {
+        const filterParam = encodeURIComponent(JSON.stringify([state.userId]));
+        const metaRows = await sbFetch(`shixu_groups?member_ids=cs.${filterParam}&select=id,invite_code,updated_at`);
+        const toFetchIds = [];
+        const seenCodes = new Set();
+
+        for (const r of metaRows || []) {
+          if (r.invite_code) seenCodes.add(r.invite_code);
+          const localG = s.groups.find((g) => g.id === r.id || (r.invite_code && g.inviteCode === r.invite_code));
+          const remoteTs = Number(r.updated_at) || 0;
+          if (!localG || remoteTs > (Number(localG.remoteUpdatedAt) || 0) || localG.id !== r.id) {
+            toFetchIds.push(r.id);
+          }
+        }
+
+        // Auto-heal: if local has a group whose invite_code wasn't in member_ids yet, probe by invite_code
+        const myLocalGroups = s.groups.filter((g) => g.memberIds.includes(state.userId));
+        for (const lg of myLocalGroups) {
+          if (lg.inviteCode && !seenCodes.has(lg.inviteCode)) {
+            const byCode = await sbFetch(`shixu_groups?invite_code=eq.${encodeURIComponent(lg.inviteCode)}&select=*`).catch(() => []);
+            if (byCode && byCode[0]) {
+              applyRemoteGroupRowToStore(s, byCode[0], state.userId);
+              changed = true;
+              // Re-merge to ensure we are included in member_ids on cloud too
+              mergeAndPushGroupToSupabase(byCode[0].id, state.userId).catch(() => {});
+            } else {
+              // Local group never pushed yet -> push it now!
+              mergeAndPushGroupToSupabase(lg.id, state.userId).catch(() => {});
+            }
+          }
+        }
+
+        for (const gid of toFetchIds) {
+          const rows = await sbFetch(`shixu_groups?id=eq.${encodeURIComponent(gid)}&select=*`);
+          if (rows && rows[0]) {
+            applyRemoteGroupRowToStore(s, rows[0], state.userId);
+            changed = true;
+          }
+        }
+      }
+
+      if (changed) {
+        memoryVaultFallback = s;
+        safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
+        idbSet('vault', s);
+        refreshActiveGroupViewPreservingInput();
+        if (!silent) showHud('小组动态与成员进度已更新', 'var(--green)');
+      } else if (!silent) {
+        showHud('小组已是最新（仅校验 45 字节，0 KB 流量）', 'var(--green)');
+      }
+      return changed;
+    } catch {
+      return false;
+    }
+  }
+
+  // Foreground-Only Event-Driven Realtime WebSocket (ONLY open while user views Group tab!)
+  // Zero background connections, zero polling, zero traffic when on other tabs or screen locked!
+  const groupRt = {
+    ws: null,
+    groupId: '',
+    connected: false,
+    hbTimer: null,
+    reconnectTimer: null,
+    retries: 0,
+    refSeq: 1
+  };
+
+  function updateGroupRealtimePill() {
+    const pill = document.getElementById('group-rt-badge');
+    if (!pill) return;
+    if (groupRt.connected) {
+      pill.textContent = '● 实时同步中';
+      pill.style.color = 'var(--green)';
+    } else if (!state.isOnline) {
+      pill.textContent = '○ 离线模式';
+      pill.style.color = 'var(--text-tertiary)';
+    } else {
+      pill.textContent = '↻ 刷新动态';
+      pill.style.color = 'var(--accent)';
+    }
+  }
+
+  function disconnectGroupRealtime() {
+    if (groupRt.reconnectTimer) {
+      clearTimeout(groupRt.reconnectTimer);
+      groupRt.reconnectTimer = null;
+    }
+    if (groupRt.hbTimer) {
+      clearInterval(groupRt.hbTimer);
+      groupRt.hbTimer = null;
+    }
+    if (groupRt.ws) {
+      const oldWs = groupRt.ws;
+      groupRt.ws = null;
+      try { oldWs.close(); } catch {}
+    }
+    groupRt.groupId = '';
+    groupRt.connected = false;
+    groupRt.retries = 0;
+    updateGroupRealtimePill();
+  }
+
+  function manageGroupRealtime() {
+    const shouldConnect = Boolean(
+      state.mode === 'supabase'
+      && state.isOnline
+      && state.data
+      && state.data.user
+      && state.activeTab === 'groups'
+      && document.visibilityState === 'visible'
+      && state.activeGroupId
+      && getSupabaseConfig()
+    );
+
+    if (!shouldConnect) {
+      if (groupRt.ws || groupRt.connected || groupRt.reconnectTimer) disconnectGroupRealtime();
+      return;
+    }
+
+    const targetGroupId = state.activeGroupId;
+    if (groupRt.ws && groupRt.groupId === targetGroupId && (groupRt.ws.readyState === WebSocket.OPEN || groupRt.ws.readyState === WebSocket.CONNECTING)) {
+      updateGroupRealtimePill();
+      return;
+    }
+
+    disconnectGroupRealtime();
+    const cfg = getSupabaseConfig();
+    if (!cfg) return;
+
+    const wsUrl = `${cfg.url.replace(/^http/i, 'ws')}/realtime/v1/websocket?apikey=${encodeURIComponent(cfg.key)}&vsn=1.0.0`;
+    let ws;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch {
+      return;
+    }
+    groupRt.ws = ws;
+    groupRt.groupId = targetGroupId;
+
+    ws.onopen = () => {
+      if (groupRt.ws !== ws) { try { ws.close(); } catch {} return; }
+      const joinRef = String(groupRt.refSeq++);
+      ws.send(JSON.stringify({
+        topic: `realtime:shixu_grp_${targetGroupId}`,
+        event: 'phx_join',
+        payload: { config: { broadcast: { self: false } } },
+        ref: joinRef
+      }));
+      // Lightweight 25s heartbeat ONLY while Group tab is actively open on screen
+      groupRt.hbTimer = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ topic: 'phoenix', event: 'heartbeat', payload: {}, ref: String(groupRt.refSeq++) }));
+        }
+      }, 25000);
+    };
+
+    ws.onmessage = (ev) => {
+      if (groupRt.ws !== ws) return;
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.event === 'phx_reply' && msg.payload && msg.payload.status === 'ok' && msg.topic === `realtime:shixu_grp_${targetGroupId}`) {
+        groupRt.connected = true;
+        groupRt.retries = 0;
+        updateGroupRealtimePill();
+      } else if (msg.event === 'broadcast' && msg.payload && msg.payload.event === 'grp_updated') {
+        const pl = msg.payload.payload || {};
+        if (pl.fromUserId && pl.fromUserId === state.userId) return;
+        const gid = pl.groupId || targetGroupId;
+        syncGroupsLightweight({ force: true, onlyGroupId: gid, silent: true }).then((updated) => {
+          if (updated && pl.preview) showHud(pl.preview, 'var(--accent)');
+        });
+      }
+    };
+
+    ws.onclose = () => {
+      if (groupRt.ws === ws) {
+        if (groupRt.hbTimer) { clearInterval(groupRt.hbTimer); groupRt.hbTimer = null; }
+        groupRt.ws = null;
+        groupRt.connected = false;
+        updateGroupRealtimePill();
+        if (state.activeTab === 'groups' && document.visibilityState === 'visible' && state.isOnline && groupRt.retries < 2) {
+          groupRt.retries += 1;
+          groupRt.reconnectTimer = setTimeout(() => {
+            groupRt.reconnectTimer = null;
+            manageGroupRealtime();
+          }, 4000);
+        }
+      }
+    };
+    ws.onerror = () => {
+      try { ws.close(); } catch {}
+    };
   }
 
   async function pullAccountFromSupabase(account, passwordHash) {
@@ -1101,17 +1498,7 @@
     for (const rg of myGroups || []) {
       const mIds = Array.isArray(rg.member_ids) ? rg.member_ids : [];
       if (!mIds.includes(hydratedUser.id)) continue;
-      const idx = s.groups.findIndex((x) => x.id === rg.id);
-      const localGrp = {
-        id: rg.id, inviteCode: rg.invite_code, name: rg.name, examName: rg.exam_name,
-        targetDate: rg.target_date, notice: rg.notice, ownerId: rg.owner_id,
-        memberIds: mIds, memberSnapshots: rg.member_snapshots || {}, createdAt: rg.updated_at || Date.now()
-      };
-      if (idx === -1) s.groups.push(localGrp);
-      else s.groups[idx] = localGrp;
-      if (Array.isArray(rg.feeds)) {
-        s.feeds = s.feeds.filter((f) => f.groupId !== rg.id).concat(rg.feeds);
-      }
+      applyRemoteGroupRowToStore(s, rg, hydratedUser.id);
     }
 
     memoryVaultFallback = s;
@@ -1124,7 +1511,7 @@
   // Ultra-Low-Bandwidth Smart Sync:
   // 1) Probes ONLY updated_at (~35 bytes) before downloading anything.
   // 2) Respects offline edits (pushes if local is newer; pulls ONLY if remote is newer).
-  // 3) Throttled to >=30s unless manually triggered.
+  // 3) Also runs lightweight ~45-byte group version check so peer joins/messages stay fresh!
   async function syncWithCloudSmart({ force = false, silent = true } = {}) {
     if (state.mode !== 'supabase' || !state.userId || !getSupabaseConfig()) return { status: 'disabled' };
     if (!navigator.onLine) {
@@ -1140,7 +1527,7 @@
     if (!localUser || !localUser.account) return { status: 'no_user' };
 
     try {
-      // ~35-byte version check!
+      // ~35-byte account version check!
       const probe = await sbFetch(`shixu_accounts?account=eq.${encodeURIComponent(normalizeAccount(localUser.account))}&select=updated_at`);
       const remoteTs = probe && probe[0] ? Number(probe[0].updated_at) || 0 : 0;
       const localTs = Number(safeStorageGet(CLOUD_LOCAL_TS_KEY)) || 0;
@@ -1149,6 +1536,7 @@
 
       if (dirty && (localTs >= remoteTs || remoteTs === 0)) {
         await flushCloudPush(state.userId);
+        await syncGroupsLightweight({ force: true, silent: true });
         if (!silent) showHud('本地最新修改已省流上传至云端', 'var(--green)');
         return { status: 'pushed' };
       }
@@ -1166,9 +1554,15 @@
         return { status: 'pushed' };
       }
 
+      const grpUpdated = await syncGroupsLightweight({ force: true, silent: true });
       state.lastSyncedAt = Date.now();
-      if (!silent) showHud('已是云端最新（本次仅校验 35 字节，0 KB 流量消耗）', 'var(--green)');
-      return { status: 'up_to_date' };
+      if (!silent) {
+        showHud(
+          grpUpdated ? '已同步小组最新成员与消息' : '已是云端最新（本次仅校验约 80 字节，0 KB 流量消耗）',
+          'var(--green)'
+        );
+      }
+      return { status: grpUpdated ? 'groups_pulled' : 'up_to_date' };
     } catch (err) {
       if (!silent) showHud(err.message || '云端同步暂不可用，数据已保存在本机', 'var(--orange)');
       return { status: 'error' };
@@ -1659,63 +2053,82 @@
       return { ok: true };
     }
 
-    // Groups
+    // Groups (Instant Conflict-Free Merge-Push + Event-Driven Realtime Broadcast)
     if (method === 'POST' && path === '/api/groups') {
       const ownerId = body.userId || state.userId;
       let inviteCode = genInviteCode();
       while (s.groups.some((g) => g.inviteCode === inviteCode)) inviteCode = genInviteCode();
+      const mySnap = buildMyMemberSnapshot(s, ownerId);
       const group = {
         id: genId('g'), name: String(body.name || '').trim().slice(0, 24), inviteCode,
         examName: String(body.examName || '共同备考目标').trim().slice(0, 24),
         targetDate: body.targetDate || addDaysStr(60),
         notice: String(body.notice || '每天按计划完成打卡，互相监督。').trim().slice(0, 60),
-        ownerId, memberIds: [ownerId], createdAt: Date.now()
+        ownerId, memberIds: [ownerId],
+        memberSnapshots: mySnap ? { [ownerId]: mySnap } : {},
+        createdAt: Date.now()
       };
       s.groups.push(group);
       s.feeds.push({ id: genId('f'), groupId: group.id, userId: ownerId, type: 'join', text: `创建了学习小组「${group.name}」，邀请码 ${inviteCode}`, createdAt: Date.now(), likedBy: [] });
-      saveLocalStore(s);
+      memoryVaultFallback = s;
+      safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
+      idbSet('vault', s);
+      if (state.mode === 'supabase' && navigator.onLine) {
+        await mergeAndPushGroupToSupabase(group.id, ownerId).catch(() => {});
+      }
       return { group };
     }
 
     if (method === 'POST' && path === '/api/groups/join') {
       const uid = body.userId || state.userId;
       const code = String(body.inviteCode || '').trim().toUpperCase();
-      let grp = s.groups.find((g) => g.inviteCode === code);
+      let grp = null;
 
-      if (!grp && state.mode === 'supabase') {
+      // Always prefer live cloud group by invite_code first so peers share the EXACT same canonical group ID!
+      if (state.mode === 'supabase' && navigator.onLine && code) {
         const remote = await sbFetch(`shixu_groups?invite_code=eq.${encodeURIComponent(code)}&select=*`).catch(() => []);
         if (remote && remote.length) {
-          const rg = remote[0];
-          grp = {
-            id: rg.id, inviteCode: rg.invite_code, name: rg.name, examName: rg.exam_name,
-            targetDate: rg.target_date, notice: rg.notice, ownerId: rg.owner_id,
-            memberIds: Array.isArray(rg.member_ids) ? rg.member_ids : [],
-            memberSnapshots: rg.member_snapshots || {}, createdAt: rg.updated_at || Date.now()
-          };
-          s.groups.push(grp);
-          if (Array.isArray(rg.feeds)) s.feeds.push(...rg.feeds);
+          grp = applyRemoteGroupRowToStore(s, remote[0], uid);
         }
       }
+      if (!grp) grp = s.groups.find((g) => g.inviteCode === code);
 
       if (!grp && body.sharedGroup && body.sharedGroup.name) {
+        const mySnap = buildMyMemberSnapshot(s, uid);
         grp = {
           id: genId('g'), name: body.sharedGroup.name, inviteCode: code || genInviteCode(),
           examName: body.sharedGroup.examName || '共同备考目标',
           targetDate: body.sharedGroup.targetDate || addDaysStr(60),
           notice: body.sharedGroup.notice || '每天按计划完成打卡。',
-          ownerId: uid, memberIds: [uid], createdAt: Date.now()
+          ownerId: uid, memberIds: [uid],
+          memberSnapshots: mySnap ? { [uid]: mySnap } : {},
+          createdAt: Date.now()
         };
         s.groups.push(grp);
         s.feeds.push({ id: genId('f'), groupId: grp.id, userId: uid, type: 'join', text: `通过邀请链接加入了「${grp.name}」`, createdAt: Date.now(), likedBy: [] });
-        saveLocalStore(s);
+        memoryVaultFallback = s;
+        safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
+        idbSet('vault', s);
+        if (state.mode === 'supabase' && navigator.onLine) {
+          const u = s.users.find((x) => x.id === uid);
+          await mergeAndPushGroupToSupabase(grp.id, uid, { broadcastPreview: `${u ? u.name : '新成员'} 加入了小组` }).catch(() => {});
+        }
         return { group: grp };
       }
       if (!grp) throw new Error('未找到该邀请码对应的学习小组，请确认邀请码');
+      const u = s.users.find((x) => x.id === uid);
       if (!grp.memberIds.includes(uid)) {
         grp.memberIds.push(uid);
         s.feeds.push({ id: genId('f'), groupId: grp.id, userId: uid, type: 'join', text: `加入小组，共同冲刺「${grp.examName}」`, createdAt: Date.now(), likedBy: [] });
       }
-      saveLocalStore(s);
+      const mySnap = buildMyMemberSnapshot(s, uid);
+      if (mySnap) grp.memberSnapshots = { ...(grp.memberSnapshots || {}), [uid]: mySnap };
+      memoryVaultFallback = s;
+      safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
+      idbSet('vault', s);
+      if (state.mode === 'supabase' && navigator.onLine) {
+        await mergeAndPushGroupToSupabase(grp.id, uid, { broadcastPreview: `${u ? u.name : '新成员'} 加入了小组` }).catch(() => {});
+      }
       return { group: grp };
     }
 
@@ -1723,32 +2136,55 @@
     if (gfMatch && method === 'POST') {
       const text = String(body.text || '').trim().slice(0, 100);
       if (!text) throw new Error('请输入动态内容');
-      s.feeds.push({ id: genId('f'), groupId: gfMatch[1], userId: body.userId || state.userId, type: 'note', text, createdAt: Date.now(), likedBy: [] });
-      saveLocalStore(s);
+      const uid = body.userId || state.userId;
+      const u = s.users.find((x) => x.id === uid);
+      s.feeds.push({ id: genId('f'), groupId: gfMatch[1], userId: uid, type: 'note', text, createdAt: Date.now(), likedBy: [] });
+      memoryVaultFallback = s;
+      safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
+      idbSet('vault', s);
+      if (bc) bc.postMessage({ type: 'sync', toastMsg: `${u ? u.name : '成员'}：${text}`, fromUserId: uid });
+      if (state.mode === 'supabase' && navigator.onLine) {
+        await mergeAndPushGroupToSupabase(gfMatch[1], uid, { broadcastPreview: `${u ? u.name : '组员'}：${text.slice(0, 26)}` }).catch(() => {});
+      }
       return { ok: true };
     }
 
     const glMatch = path.match(/^\/api\/groups\/([^/]+)\/leave$/);
     if (glMatch && method === 'POST') {
+      const uid = body.userId || state.userId;
       const grp = s.groups.find((g) => g.id === glMatch[1]);
       if (grp) {
-        grp.memberIds = grp.memberIds.filter((id) => id !== (body.userId || state.userId));
+        grp.memberIds = grp.memberIds.filter((id) => id !== uid);
         if (grp.memberIds.length === 0) s.groups = s.groups.filter((g) => g.id !== grp.id);
-        saveLocalStore(s);
+        memoryVaultFallback = s;
+        safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
+        idbSet('vault', s);
+        if (state.mode === 'supabase' && navigator.onLine) {
+          await mergeAndPushGroupToSupabase(glMatch[1], '', { leaveUserId: uid }).catch(() => {});
+        }
       }
       return { ok: true };
     }
 
     const nMatch = path.match(/^\/api\/groups\/([^/]+)\/nudge$/);
     if (nMatch && method === 'POST') {
+      const grp = s.groups.find((g) => g.id === nMatch[1]);
       const fromUser = s.users.find((u) => u.id === body.fromUserId);
-      const toUser = s.users.find((u) => u.id === body.toUserId) || { name: '组员' };
+      const toUser = s.users.find((u) => u.id === body.toUserId)
+        || (grp && grp.memberSnapshots && grp.memberSnapshots[body.toUserId])
+        || { name: '组员' };
       if (!fromUser) throw new Error('成员不存在');
       const kind = body.kind === 'cheer' ? 'cheer' : 'nudge';
       const p = getPack();
       const text = kind === 'cheer' ? p.cheerText(toUser.name) : p.nudgeText(toUser.name);
       s.feeds.push({ id: genId('f'), groupId: nMatch[1], userId: fromUser.id, type: kind, text, createdAt: Date.now(), likedBy: [] });
-      saveLocalStore(s, `${fromUser.name}：${text}`);
+      memoryVaultFallback = s;
+      safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
+      idbSet('vault', s);
+      if (bc) bc.postMessage({ type: 'sync', toastMsg: `${fromUser.name}：${text}`, fromUserId: fromUser.id });
+      if (state.mode === 'supabase' && navigator.onLine) {
+        await mergeAndPushGroupToSupabase(nMatch[1], fromUser.id, { broadcastPreview: `${fromUser.name}：${text.slice(0, 26)}` }).catch(() => {});
+      }
       return { ok: true };
     }
 
@@ -1757,10 +2193,16 @@
       const f = s.feeds.find((x) => x.id === lMatch[1]);
       if (f) {
         const uid = body.userId || state.userId;
+        if (!Array.isArray(f.likedBy)) f.likedBy = [];
         const i = f.likedBy.indexOf(uid);
         if (i === -1) f.likedBy.push(uid);
         else f.likedBy.splice(i, 1);
-        saveLocalStore(s);
+        memoryVaultFallback = s;
+        safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
+        idbSet('vault', s);
+        if (state.mode === 'supabase' && navigator.onLine && f.groupId) {
+          mergeAndPushGroupToSupabase(f.groupId, uid).catch(() => {});
+        }
       }
       return { ok: true };
     }
@@ -2502,6 +2944,7 @@ Script.complete();`;
     }
 
     if (!animate && !modalOpen) window.scrollTo(0, savedScroll);
+    manageGroupRealtime();
   }
 
   function buildUnifiedAuthView() {
@@ -3228,7 +3671,9 @@ Script.complete();`;
 
         <div class="section-header">
           <h2 class="section-title">${esc(p.groupMemberTitle)} (${activeGroup.members.length} 人)</h2>
-          <span style="font-size:12px;color:var(--text-secondary);">点击头像互动</span>
+          <button type="button" id="group-rt-badge" class="section-action" data-action="refresh-groups-now" style="font-size:12px;color:${groupRt.connected ? 'var(--green)' : 'var(--accent)'};">
+            ${groupRt.connected ? '● 实时同步中' : '↻ 刷新动态'}
+          </button>
         </div>
 
         <section class="card">
@@ -5683,6 +6128,9 @@ Script.complete();`;
       window.scrollTo(0, 0);
       topNav.classList.remove('is-scrolled');
       renderView(true);
+      if (next === 'groups' && state.mode === 'supabase') {
+        syncGroupsLightweight({ force: true, silent: true }).catch(() => {});
+      }
     });
   });
 
@@ -5896,7 +6344,9 @@ Script.complete();`;
     }
 
     if (action === 'goto-groups') {
-      state.activeTab = 'groups'; syncTabButtons(); window.scrollTo(0, 0); renderView(true); return;
+      state.activeTab = 'groups'; syncTabButtons(); window.scrollTo(0, 0); renderView(true);
+      if (state.mode === 'supabase') syncGroupsLightweight({ force: true, silent: true }).catch(() => {});
+      return;
     }
 
     if (action === 'goto-exams') {
@@ -5904,7 +6354,18 @@ Script.complete();`;
     }
 
     if (action === 'select-group') {
-      state.activeGroupId = btn.dataset.id; renderView(false); return;
+      state.activeGroupId = btn.dataset.id; renderView(false);
+      if (state.mode === 'supabase') syncGroupsLightweight({ force: true, silent: true }).catch(() => {});
+      return;
+    }
+
+    if (action === 'refresh-groups-now') {
+      if (state.mode === 'supabase') {
+        syncGroupsLightweight({ force: true, silent: false }).then(() => manageGroupRealtime());
+      } else {
+        loadBootstrap(true);
+      }
+      return;
     }
 
     if (action === 'toggle-task') {
@@ -6108,20 +6569,34 @@ Script.complete();`;
     showHud('网络已恢复，自动按省流模式校验同步', 'var(--green)');
     if (state.data && state.data.user) {
       renderView(false);
-      if (state.mode === 'supabase') syncWithCloudSmart({ force: true, silent: true }).catch(() => {});
+      if (state.mode === 'supabase') {
+        syncWithCloudSmart({ force: true, silent: true }).catch(() => {});
+        if (state.activeTab === 'groups') syncGroupsLightweight({ force: true, silent: true }).catch(() => {});
+      }
     }
   });
 
   window.addEventListener('offline', () => {
     state.isOnline = false;
+    disconnectGroupRealtime();
     showHud('已切换至离线模式，全部学习与错题功能可正常使用', 'var(--orange)');
     if (state.data && state.data.user) renderView(false);
   });
 
-  // When switching back to this device from another phone/iPad, run a 35-byte version probe (throttled >=30s)
+  // Strict Zero-Background-Waste lifecycle:
+  // - Background / screen locked -> immediately close Group WebSocket (0 background traffic & battery!)
+  // - Foreground resume -> 35-byte version check + reconnect Group Realtime ONLY if viewing Groups tab
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && state.mode === 'supabase' && state.userId && navigator.onLine) {
+    if (document.visibilityState !== 'visible') {
+      disconnectGroupRealtime();
+      return;
+    }
+    if (state.mode === 'supabase' && state.userId && navigator.onLine) {
       syncWithCloudSmart({ force: false, silent: true }).catch(() => {});
+      if (state.activeTab === 'groups') {
+        manageGroupRealtime();
+        syncGroupsLightweight({ force: true, silent: true }).catch(() => {});
+      }
     }
   });
 
