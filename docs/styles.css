@@ -3362,6 +3362,55 @@ html[data-theme="dark"] .mistake-hero {
   color: var(--accent);
 }
 
+.mistake-kind-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.mistake-kind-pill.is-wq {
+  background: var(--orange-soft);
+  color: var(--orange);
+}
+
+.mistake-kind-pill.is-kp {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.wq-rollover-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.wq-rule-card {
+  padding: 12px 14px;
+  border-radius: 13px;
+  background: var(--orange-soft);
+  border: 1px solid rgba(255, 149, 0, 0.22);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.wq-rule-card-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--orange);
+  margin-bottom: 4px;
+}
+
 .mistake-card-title {
   font-size: 16px;
   font-weight: 700;

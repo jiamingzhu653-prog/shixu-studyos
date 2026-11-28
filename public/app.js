@@ -291,21 +291,21 @@
       id: 'ebbinghaus',
       name: '艾宾浩斯曲线',
       short: '艾宾浩斯 6 轮',
-      desc: '自动排入当日 +1/+2/+4/+7/+15 天时间轴',
+      desc: '默认从明日起自动排入首日 +1/+2/+4/+7/+15 天时间轴',
       offsets: [0, 1, 2, 4, 7, 15]
     },
     ebbinghaus_long: {
       id: 'ebbinghaus_long',
       name: '长效强化 7 轮',
       short: '强化 7 轮',
-      desc: '自动排入当日 +1/+2/+4/+7/+15/+30 天深度巩固',
+      desc: '默认从明日起自动排入首日 +1/+2/+4/+7/+15/+30 天深度巩固',
       offsets: [0, 1, 2, 4, 7, 15, 30]
     },
     sprint: {
       id: 'sprint',
       name: '考前高频巩固',
       short: '高频 4 轮',
-      desc: '自动排入当日 +1/+3/+7 天密集复盘',
+      desc: '默认从明日起自动排入首日 +1/+3/+7 天密集复盘',
       offsets: [0, 1, 3, 7]
     },
     single: {
@@ -331,8 +331,12 @@
     return `<button type="button" class="sheet-close" data-action="close-sheet" aria-label="关闭">${CLOSE_ICON_SVG}</button>`;
   }
 
+  function tomorrowKey() {
+    return shiftDateISO(todayKey(), 1);
+  }
+
   function generateReviewDates(startDate, presetId = 'ebbinghaus') {
-    const base = isValidDateISO(startDate) ? startDate : todayKey();
+    const base = isValidDateISO(startDate) ? startDate : tomorrowKey();
     const preset = REVIEW_PRESETS[presetId] || REVIEW_PRESETS.ebbinghaus;
     return Array.from(new Set(preset.offsets.map((d) => shiftDateISO(base, d)))).sort();
   }
@@ -341,18 +345,93 @@
     return Boolean(task && task.taskType === 'review');
   }
 
+  function getMistakeKind(task) {
+    if (!isReviewTask(task)) return '';
+    return task.mistakeKind === 'wrong_question' ? 'wrong_question' : 'knowledge_point';
+  }
+
+  function isWrongQuestionTask(task) {
+    return getMistakeKind(task) === 'wrong_question';
+  }
+
+  function isKnowledgePointTask(task) {
+    return getMistakeKind(task) === 'knowledge_point';
+  }
+
+  // Auto-rollover: any unfinished 'wrong_question' whose date < today automatically shifts to today!
+  function rolloverUnfinishedWrongQuestions(s, today = todayKey()) {
+    if (!s || !Array.isArray(s.tasks)) return false;
+    let changed = false;
+    for (const t of s.tasks) {
+      if (!isWrongQuestionTask(t)) continue;
+      const curDate = isValidDateISO(t.date) ? t.date : today;
+      if (curDate < today && !isTaskDoneOnDate(t, curDate)) {
+        if (!isValidDateISO(t.originDate)) t.originDate = curDate;
+        t.date = today;
+        t.reviewDates = [today];
+        const origMs = parseDateISO(t.originDate).getTime();
+        const todayMs = parseDateISO(today).getTime();
+        t.rolloverCount = Math.max(1, Math.round((todayMs - origMs) / 86400000));
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   function getReviewRoundInfo(task, dateStr) {
     if (!isReviewTask(task)) return null;
+    if (isWrongQuestionTask(task)) {
+      return { round: 1, total: 1, isWrongQuestion: true };
+    }
     const dates = Array.isArray(task.reviewDates) && task.reviewDates.length ? task.reviewDates : [task.date];
     const idx = dates.indexOf(dateStr);
     return {
       round: idx >= 0 ? idx + 1 : 1,
-      total: dates.length
+      total: dates.length,
+      isWrongQuestion: false
     };
   }
 
   // Real Ebbinghaus Forgetting Curve Retention & Priority Engine: R(t) = e^(-t / S)
   function computeEbbinghausMetrics(task, today = todayKey()) {
+    if (isWrongQuestionTask(task)) {
+      const targetDate = isValidDateISO(task.date) ? task.date : tomorrowKey();
+      const tom = shiftDateISO(today, 1);
+      const roll = Number(task.rolloverCount) || 0;
+      const isDueToday = targetDate <= today;
+      let dueStatus = 'upcoming';
+      let dueLabel = targetDate === tom ? `明日提醒订正 (${formatShortMD(targetDate)})` : `排期 ${formatShortMD(targetDate)} 订正`;
+      let badgeCls = 'is-safe';
+      let urgencyScore = 40;
+      if (isDueToday && roll > 0) {
+        dueStatus = 'overdue';
+        dueLabel = `顺延第 ${roll} 天 · 今日待订正`;
+        badgeCls = 'is-urgent';
+        urgencyScore = 240 + roll * 15;
+      } else if (isDueToday) {
+        dueStatus = 'due';
+        dueLabel = '今日提醒订正';
+        badgeCls = 'is-warn';
+        urgencyScore = 195;
+      } else if (targetDate === tom) {
+        dueStatus = 'upcoming';
+        badgeCls = 'is-warn';
+        urgencyScore = 80;
+      }
+      return {
+        retentionPct: isDueToday ? 35 : 70,
+        dueStatus,
+        dueLabel,
+        badgeCls,
+        urgencyScore,
+        doneRounds: 0,
+        totalRounds: 1,
+        nextDate: targetDate,
+        isDueNow: isDueToday,
+        isWrongQuestion: true
+      };
+    }
+
     const dates = Array.isArray(task.reviewDates) && task.reviewDates.length ? task.reviewDates : [task.date || today];
     const doneSet = new Set(Array.isArray(task.completedDates) ? task.completedDates : []);
     const doneRounds = dates.filter((d) => doneSet.has(d)).length;
@@ -420,13 +499,15 @@
       doneRounds,
       totalRounds,
       nextDate,
-      isDueNow: dueStatus === 'overdue' || dueStatus === 'due'
+      isDueNow: dueStatus === 'overdue' || dueStatus === 'due',
+      isWrongQuestion: false
     };
   }
 
   function buildEbbinghausReviewQueue(tasks, { scope = 'ebbinghaus', category = 'all' } = {}) {
     const today = todayKey();
-    let list = (tasks || []).filter((t) => isReviewTask(t));
+    // Ebbinghaus forgetting-curve rolling review cabin focuses on knowledge_point entries
+    let list = (tasks || []).filter((t) => isKnowledgePointTask(t));
     if (category && category !== 'all') {
       list = list.filter((t) => (t.category || '未分组') === category);
     }
@@ -523,6 +604,7 @@
     theme: safeStorageGet('shixu_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
     activeTab: 'today',
     taskFilter: 'all', // 'all' | 'review' | 'todo'
+    mistakeKindFilter: 'all', // 'all' | 'wrong_question' | 'knowledge_point'
     mistakeFilter: 'all', // 'all' | 'due' | 'weak' | 'reviewing' | 'mastered'
     mistakeSubject: 'all',
     mistakeSearch: '',
@@ -885,9 +967,16 @@
     if (!s && memoryVaultFallback) s = memoryVaultFallback;
     s = migrateStore(s);
     const today = todayKey();
+    let changed = false;
     if (s.lastRolloverDate !== today) {
       for (const u of s.users) u.focusMinutesToday = 0;
       s.lastRolloverDate = today;
+      changed = true;
+    }
+    if (rolloverUnfinishedWrongQuestions(s, today)) {
+      changed = true;
+    }
+    if (changed) {
       memoryVaultFallback = s;
       safeStorageSet(PERMANENT_VAULT_KEY, JSON.stringify(s));
       idbSet('vault', s);
@@ -1558,6 +1647,7 @@
     s.categories = s.categories.filter((c) => c.userId !== hydratedUser.id).concat(p.categories || []);
     s.exams = s.exams.filter((e) => e.userId !== hydratedUser.id).concat(p.exams || []);
     s.tasks = s.tasks.filter((t) => t.userId !== hydratedUser.id).concat(p.tasks || []);
+    rolloverUnfinishedWrongQuestions(s, todayKey());
 
     // Filter server-side by Postgres JSONB containment so we ONLY fetch this user's own groups!
     const filterParam = encodeURIComponent(JSON.stringify([hydratedUser.id]));
@@ -1985,9 +2075,13 @@
       const categoryName = String(body.category || body.subject || '未分组').trim().slice(0, 18) || '未分组';
       if (categoryName !== '未分组') ensureLocalCategory(s, uid, categoryName, body.categoryColor);
 
-      const taskDate = isValidDateISO(body.date) ? body.date : today;
       const isReview = body.taskType === 'review';
-      const cleanReviewDates = isReview && Array.isArray(body.reviewDates)
+      const mistakeKind = isReview
+        ? (body.mistakeKind === 'wrong_question' ? 'wrong_question' : 'knowledge_point')
+        : '';
+      const isWrongQ = isReview && mistakeKind === 'wrong_question';
+      const taskDate = isValidDateISO(body.date) ? body.date : (isReview ? tomorrowKey() : today);
+      const cleanReviewDates = isReview && !isWrongQ && Array.isArray(body.reviewDates)
         ? Array.from(new Set(body.reviewDates.filter((d) => isValidDateISO(d)))).sort()
         : [];
       const task = {
@@ -1997,11 +2091,14 @@
         category: categoryName,
         subject: categoryName,
         taskType: isReview ? 'review' : 'normal',
-        reviewPreset: isReview ? String(body.reviewPreset || 'ebbinghaus').slice(0, 20) : '',
-        reviewDates: isReview ? (cleanReviewDates.length ? cleanReviewDates : [taskDate]) : [],
+        mistakeKind,
+        originDate: isWrongQ ? taskDate : '',
+        rolloverCount: 0,
+        reviewPreset: isWrongQ ? 'correct_once' : (isReview ? String(body.reviewPreset || 'ebbinghaus').slice(0, 20) : ''),
+        reviewDates: isWrongQ ? [taskDate] : (isReview ? (cleanReviewDates.length ? cleanReviewDates : [taskDate]) : []),
         mistakeNote: isReview ? String(body.mistakeNote || '').trim().slice(0, 400) : '',
         mistakeReason: isReview ? String(body.mistakeReason || '').trim().slice(0, 24) : '',
-        mastery: isReview && MASTERY_LEVELS[body.mastery] ? body.mastery : (isReview ? 'weak' : ''),
+        mastery: isWrongQ ? '' : (isReview && MASTERY_LEVELS[body.mastery] ? body.mastery : (isReview ? 'weak' : '')),
         reviewCount: isReview ? Math.max(0, Number(body.reviewCount) || 0) : 0,
         lastReviewedAt: isReview ? (Number(body.lastReviewedAt) || Date.now()) : 0,
         durationMin: Math.min(360, Math.max(5, Number(body.durationMin) || 30)),
@@ -2035,6 +2132,9 @@
       if (body.taskType === 'review' || body.taskType === 'normal') {
         task.taskType = body.taskType;
         if (task.taskType === 'normal') {
+          task.mistakeKind = '';
+          task.originDate = '';
+          task.rolloverCount = 0;
           task.reviewDates = [];
           task.reviewPreset = '';
           task.mistakeNote = '';
@@ -2044,18 +2144,54 @@
           task.repeatDaily = false;
         }
       }
-      if (typeof body.reviewPreset === 'string') task.reviewPreset = body.reviewPreset.slice(0, 20);
+      if (task.taskType === 'review' && (body.mistakeKind === 'wrong_question' || body.mistakeKind === 'knowledge_point')) {
+        task.mistakeKind = body.mistakeKind;
+        if (task.mistakeKind === 'wrong_question') {
+          task.reviewPreset = 'correct_once';
+          task.reviewDates = [task.date];
+          task.mastery = '';
+          if (!isValidDateISO(task.originDate)) task.originDate = task.date;
+        } else {
+          task.originDate = '';
+          task.rolloverCount = 0;
+          if (!MASTERY_LEVELS[task.mastery]) task.mastery = 'weak';
+        }
+      }
+      if (typeof body.reviewPreset === 'string' && !isWrongQuestionTask(task)) task.reviewPreset = body.reviewPreset.slice(0, 20);
       if (Array.isArray(body.reviewDates)) {
-        task.reviewDates = Array.from(new Set(body.reviewDates.filter((d) => isValidDateISO(d)))).sort();
+        const cleanDates = Array.from(new Set(body.reviewDates.filter((d) => isValidDateISO(d)))).sort();
+        task.reviewDates = isWrongQuestionTask(task) ? [task.date] : cleanDates;
       }
       if (typeof body.mistakeNote === 'string') task.mistakeNote = body.mistakeNote.trim().slice(0, 400);
       if (typeof body.mistakeReason === 'string') task.mistakeReason = body.mistakeReason.trim().slice(0, 24);
-      if (body.mastery === '' || MASTERY_LEVELS[body.mastery]) task.mastery = body.mastery;
+      if (!isWrongQuestionTask(task) && (body.mastery === '' || MASTERY_LEVELS[body.mastery])) task.mastery = body.mastery;
       if (typeof body.reviewCount === 'number' && body.reviewCount >= 0) task.reviewCount = Math.round(body.reviewCount);
       if (typeof body.lastReviewedAt === 'number' && body.lastReviewedAt > 0) task.lastReviewedAt = body.lastReviewedAt;
       if (body.bumpReview === true) {
         task.reviewCount = (Number(task.reviewCount) || 0) + 1;
         task.lastReviewedAt = Date.now();
+      }
+
+      // Wrong-question mode: checking it off completes correction & automatically removes the task!
+      if (body.done === true && isWrongQuestionTask(task)) {
+        const removed = JSON.parse(JSON.stringify(task));
+        const idx = s.tasks.findIndex((t) => t.id === task.id);
+        if (idx !== -1) s.tasks.splice(idx, 1);
+        const u = s.users.find((x) => x.id === task.userId);
+        for (const g of s.groups.filter((gr) => gr.memberIds.includes(task.userId))) {
+          s.feeds.push({
+            id: genId('f'),
+            groupId: g.id,
+            userId: task.userId,
+            type: 'checkin',
+            text: `完成错题订正「${task.category} · ${task.title}」`,
+            createdAt: Date.now(),
+            likedBy: []
+          });
+        }
+        const toastMsg = `${u ? u.name : '成员'} 完成了错题订正：${task.title.slice(0, 14)}`;
+        saveLocalStore(s, toastMsg);
+        return { ok: true, autoDeleted: true, removed };
       }
 
       const targetDate = isValidDateISO(body.date) ? body.date : today;
@@ -3394,11 +3530,13 @@ Script.complete();`;
                       ${grp.items.map((t) => {
                         const done = isTaskDoneOnDate(t, sel);
                         const review = isReviewTask(t);
+                        const isWrongQ = isWrongQuestionTask(t);
                         const roundInfo = review ? getReviewRoundInfo(t, sel) : null;
-                        const masteryObj = review ? (MASTERY_LEVELS[t.mastery] || MASTERY_LEVELS.weak) : null;
+                        const masteryObj = review && !isWrongQ ? (MASTERY_LEVELS[t.mastery] || MASTERY_LEVELS.weak) : null;
+                        const roll = isWrongQ ? (Number(t.rolloverCount) || 0) : 0;
                         return `
                           <div class="task-row ${done ? 'is-done' : ''} ${review ? 'is-review-task' : ''}" data-task-row="${t.id}">
-                            <button type="button" class="task-check-btn" data-action="toggle-task" data-id="${t.id}" aria-label="${done ? '取消完成' : '标记完成'}">
+                            <button type="button" class="task-check-btn" data-action="toggle-task" data-id="${t.id}" aria-label="${isWrongQ ? '完成订正并自动删除' : (done ? '取消完成' : '标记完成')}">
                               <svg class="task-check-svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M4.5 10.5l3.6 3.6 7.4-7.8"/>
                               </svg>
@@ -3407,7 +3545,9 @@ Script.complete();`;
                               <div class="task-title">${esc(t.title)}</div>
                               ${review && t.mistakeNote ? `<div class="task-mistake-note">${esc(t.mistakeNote)}</div>` : ''}
                               <div class="task-meta">
-                                ${review && roundInfo ? `<span class="review-round-tag">${esc(p.reviewRound(roundInfo.round, roundInfo.total))}</span>` : ''}
+                                ${isWrongQ
+                                  ? `<span class="mistake-kind-pill is-wq">错题订正 · 完成后自动移除</span>${roll > 0 ? `<span class="wq-rollover-tag">顺延第 ${roll} 天</span>` : ''}`
+                                  : (review && roundInfo ? `<span class="review-round-tag">${esc(p.reviewRound(roundInfo.round, roundInfo.total))}</span>` : '')}
                                 <span class="tabular">${t.durationMin} 分钟</span>
                                 ${t.repeatDaily ? '<span>· 每日重复</span>' : ''}
                               </div>
@@ -3439,7 +3579,7 @@ Script.complete();`;
           </div>
           <p style="font-size:12px;margin:6px 0 14px;">
             ${state.taskFilter === 'review'
-              ? '记录一道错题或知识点，系统将按艾宾浩斯遗忘曲线自动排入未来 15 天时间轴提醒复习。'
+              ? '错题订正默认明日提醒（完成后自动删除，未完成次日顺延）；错误知识点从明日起按遗忘曲线自动排期复习。'
               : esc(p.taskEmptyDesc)}
           </p>
           <div style="display:flex;justify-content:center;flex-wrap:wrap;gap:8px;">
@@ -3457,7 +3597,7 @@ Script.complete();`;
     const allReviews = ((state.data && state.data.tasks) || []).filter((t) => isReviewTask(t));
     const enriched = allReviews.map((t) => ({ task: t, metrics: computeEbbinghausMetrics(t, today) }));
 
-    // Sort by Ebbinghaus urgency desc so most urgent items always surface first
+    // Sort by urgency desc so most urgent corrections & knowledge points always surface first
     enriched.sort((a, b) => {
       if (b.metrics.urgencyScore !== a.metrics.urgencyScore) return b.metrics.urgencyScore - a.metrics.urgencyScore;
       return (b.task.createdAt || 0) - (a.task.createdAt || 0);
@@ -3465,10 +3605,12 @@ Script.complete();`;
 
     const q = (state.mistakeSearch || '').trim().toLowerCase();
     return enriched.filter(({ task: t, metrics: m }) => {
+      if (state.mistakeKindFilter === 'wrong_question' && !isWrongQuestionTask(t)) return false;
+      if (state.mistakeKindFilter === 'knowledge_point' && !isKnowledgePointTask(t)) return false;
       if (state.mistakeFilter === 'due' && !m.isDueNow) return false;
-      if (state.mistakeFilter === 'weak' && (t.mastery || 'weak') !== 'weak') return false;
-      if (state.mistakeFilter === 'reviewing' && t.mastery !== 'reviewing') return false;
-      if (state.mistakeFilter === 'mastered' && t.mastery !== 'mastered') return false;
+      if (state.mistakeFilter === 'weak' && (isWrongQuestionTask(t) || (t.mastery || 'weak') !== 'weak')) return false;
+      if (state.mistakeFilter === 'reviewing' && (isWrongQuestionTask(t) || t.mastery !== 'reviewing')) return false;
+      if (state.mistakeFilter === 'mastered' && (isWrongQuestionTask(t) || t.mastery !== 'mastered')) return false;
       if (state.mistakeSubject !== 'all' && (t.category || '未分组') !== state.mistakeSubject) return false;
       if (q) {
         const hay = `${t.title || ''} ${t.mistakeNote || ''} ${t.mistakeReason || ''} ${t.category || ''}`.toLowerCase();
@@ -3486,19 +3628,24 @@ Script.complete();`;
 
     if (!entries.length) {
       const totalMistakes = ((state.data && state.data.tasks) || []).filter((t) => isReviewTask(t)).length;
+      const emptyLabel = state.mistakeKindFilter === 'wrong_question'
+        ? '暂无待订正错题'
+        : (state.mistakeKindFilter === 'knowledge_point' ? '暂无错误知识点' : `还没有录入任何${esc(p.reviewLabel)}`);
       return `
         <section class="card empty-box">
           <div style="font-size:15px;font-weight:600;color:var(--text-primary);">
-            ${totalMistakes ? '当前筛选条件下暂无匹配错题' : `还没有录入任何${esc(p.reviewLabel)}`}
+            ${totalMistakes && state.mistakeKindFilter === 'all' ? '当前筛选条件下暂无匹配记录' : emptyLabel}
           </div>
           <p style="font-size:12px;margin:6px 0 14px;line-height:1.55;">
-            ${totalMistakes
-              ? '可切换上方状态或科目筛选，或清空搜索词查看全部错题。'
-              : '一键记录错题与易忘知识点，系统自动按艾宾浩斯遗忘曲线排期，并支持独立全屏滚动自动复习。'}
+            ${state.mistakeKindFilter === 'wrong_question'
+              ? '记录错题后将自动排入明日提醒订正：勾选完成即自动删除，若未完成则次日自动顺延提醒。'
+              : (state.mistakeKindFilter === 'knowledge_point'
+                ? '记录错误知识点后，系统将从明日起按艾宾浩斯遗忘曲线自动排期并支持滚动复习。'
+                : '支持区分「错题订正」（明日提醒、完成后自动删除、未完成次日顺延）与「错误知识点」（明日起进入遗忘曲线复习计划）。')}
           </p>
           <div style="display:flex;justify-content:center;flex-wrap:wrap;gap:8px;">
-            ${totalMistakes ? `<button type="button" class="btn-secondary btn-sm" data-action="reset-mistake-filters">显示全部错题</button>` : ''}
-            <button type="button" class="btn-primary btn-sm" data-action="open-quick-mistake">+ 一键记录错误知识点</button>
+            ${totalMistakes ? `<button type="button" class="btn-secondary btn-sm" data-action="reset-mistake-filters">显示全部</button>` : ''}
+            <button type="button" class="btn-primary btn-sm" data-action="open-quick-mistake">+ 一键记录错题 / 知识点</button>
           </div>
         </section>
       `;
@@ -3507,7 +3654,8 @@ Script.complete();`;
     return `
       <div class="mistake-list">
         ${entries.map(({ task: t, metrics: m }) => {
-          const masteryObj = MASTERY_LEVELS[t.mastery] || MASTERY_LEVELS.weak;
+          const isWrongQ = isWrongQuestionTask(t);
+          const masteryObj = !isWrongQ ? (MASTERY_LEVELS[t.mastery] || MASTERY_LEVELS.weak) : null;
           const catColor = catColorMap.get(t.category) || '#0071E3';
           const dates = Array.isArray(t.reviewDates) && t.reviewDates.length ? t.reviewDates : [t.date];
           const doneSet = new Set(Array.isArray(t.completedDates) ? t.completedDates : []);
@@ -3517,6 +3665,7 @@ Script.complete();`;
               <div class="mistake-card-head">
                 <div style="min-width:0;flex:1;">
                   <div class="mistake-card-badges">
+                    <span class="mistake-kind-pill ${isWrongQ ? 'is-wq' : 'is-kp'}">${isWrongQ ? '错题订正' : '错误知识点'}</span>
                     <span class="mistake-cat-pill">
                       <span class="category-color-dot" style="width:7px;height:7px;background:${catColor};"></span>
                       ${esc(t.category || '未分组')}
@@ -3526,28 +3675,44 @@ Script.complete();`;
                   </div>
                   <div class="mistake-card-title">${esc(t.title)}</div>
                 </div>
-                <button type="button" class="mastery-pill ${masteryObj.cls}" data-action="cycle-mastery" data-id="${t.id}" title="点击切换掌握状态">${masteryObj.label}</button>
+                ${masteryObj ? `
+                  <button type="button" class="mastery-pill ${masteryObj.cls}" data-action="cycle-mastery" data-id="${t.id}" title="点击切换掌握状态">${masteryObj.label}</button>
+                ` : ''}
               </div>
 
               ${t.mistakeNote ? `<div class="mistake-solution-box">${esc(t.mistakeNote)}</div>` : ''}
 
-              <div class="review-schedule-preview" style="margin-top:10px;">
-                ${dates.map((d, idx) => `
-                  <span class="review-date-chip ${doneSet.has(d) ? 'is-done' : ''}">R${idx + 1} ${formatShortMD(d)}${doneSet.has(d) ? ' ✓' : ''}</span>
-                `).join('')}
-              </div>
+              ${isWrongQ ? `
+                <div class="review-schedule-preview" style="margin-top:10px;">
+                  <span class="review-date-chip">提醒日期 ${formatShortMD(t.date)}</span>
+                  <span class="review-date-chip">完成后自动删除</span>
+                  <span class="review-date-chip">未完成次日顺延</span>
+                </div>
+              ` : `
+                <div class="review-schedule-preview" style="margin-top:10px;">
+                  ${dates.map((d, idx) => `
+                    <span class="review-date-chip ${doneSet.has(d) ? 'is-done' : ''}">R${idx + 1} ${formatShortMD(d)}${doneSet.has(d) ? ' ✓' : ''}</span>
+                  `).join('')}
+                </div>
+              `}
 
               <div class="mistake-card-foot">
                 <span style="font-size:11px;color:var(--text-secondary);" class="tabular">
-                  已完成 ${m.doneRounds}/${m.totalRounds} 轮${t.reviewCount ? ` · 累计温习 ${t.reviewCount} 次` : ''}
+                  ${isWrongQ
+                    ? (Number(t.rolloverCount) > 0 ? `原定 ${formatShortMD(t.originDate || t.date)} · 已自动顺延 ${t.rolloverCount} 天` : '订正完成后勾选即自动移除')
+                    : `已完成 ${m.doneRounds}/${m.totalRounds} 轮${t.reviewCount ? ` · 累计温习 ${t.reviewCount} 次` : ''}`}
                 </span>
                 <div class="mistake-card-actions">
-                  ${doneToday
-                    ? `<span style="font-size:12px;font-weight:600;color:var(--green);padding:4px 8px;">今日已复 ✓</span>`
-                    : `<button type="button" class="btn-secondary btn-sm" style="color:var(--accent);padding:5px 10px;" data-action="mistake-checkin-today" data-id="${t.id}">打卡复习</button>`}
-                  <button type="button" class="btn-secondary btn-sm" style="padding:5px 10px;" data-action="open-auto-review-from" data-id="${t.id}">滚动复盘</button>
+                  ${isWrongQ ? `
+                    <button type="button" class="btn-secondary btn-sm" style="color:var(--green);padding:5px 10px;" data-action="mistake-checkin-today" data-id="${t.id}">完成订正</button>
+                  ` : `
+                    ${doneToday
+                      ? `<span style="font-size:12px;font-weight:600;color:var(--green);padding:4px 8px;">今日已复 ✓</span>`
+                      : `<button type="button" class="btn-secondary btn-sm" style="color:var(--accent);padding:5px 10px;" data-action="mistake-checkin-today" data-id="${t.id}">打卡复习</button>`}
+                    <button type="button" class="btn-secondary btn-sm" style="padding:5px 10px;" data-action="open-auto-review-from" data-id="${t.id}">滚动复盘</button>
+                  `}
                   <button type="button" class="btn-secondary btn-sm" style="padding:5px 10px;" data-action="edit-task" data-id="${t.id}">编辑</button>
-                  <button type="button" class="task-delete-btn" data-action="delete-task" data-id="${t.id}" aria-label="删除错题" title="删除">${CLOSE_ICON_SVG}</button>
+                  <button type="button" class="task-delete-btn" data-action="delete-task" data-id="${t.id}" aria-label="删除记录" title="删除">${CLOSE_ICON_SVG}</button>
                 </div>
               </div>
             </article>
@@ -3563,18 +3728,26 @@ Script.complete();`;
     const allReviews = ((state.data && state.data.tasks) || []).filter((t) => isReviewTask(t));
     const allEnriched = allReviews.map((t) => ({ task: t, metrics: computeEbbinghausMetrics(t, today) }));
 
-    const dueCount = allEnriched.filter((x) => x.metrics.isDueNow).length;
-    const weakCount = allEnriched.filter((x) => (x.task.mastery || 'weak') === 'weak').length;
-    const revCount = allEnriched.filter((x) => x.task.mastery === 'reviewing').length;
-    const masCount = allEnriched.filter((x) => x.task.mastery === 'mastered').length;
-    const avgRetention = allEnriched.length
-      ? Math.round(allEnriched.reduce((acc, x) => acc + x.metrics.retentionPct, 0) / allEnriched.length)
+    const wqEnriched = allEnriched.filter((x) => isWrongQuestionTask(x.task));
+    const kpEnriched = allEnriched.filter((x) => isKnowledgePointTask(x.task));
+    const wqDueCount = wqEnriched.filter((x) => x.metrics.isDueNow).length;
+    const kpDueCount = kpEnriched.filter((x) => x.metrics.isDueNow).length;
+
+    const activePool = state.mistakeKindFilter === 'wrong_question'
+      ? wqEnriched
+      : (state.mistakeKindFilter === 'knowledge_point' ? kpEnriched : allEnriched);
+    const dueCount = activePool.filter((x) => x.metrics.isDueNow).length;
+    const weakCount = kpEnriched.filter((x) => (x.task.mastery || 'weak') === 'weak').length;
+    const revCount = kpEnriched.filter((x) => x.task.mastery === 'reviewing').length;
+    const masCount = kpEnriched.filter((x) => x.task.mastery === 'mastered').length;
+    const avgRetention = kpEnriched.length
+      ? Math.round(kpEnriched.reduce((acc, x) => acc + x.metrics.retentionPct, 0) / kpEnriched.length)
       : 100;
 
-    // 6-stage Ebbinghaus distribution buckets
+    // 6-stage Ebbinghaus distribution buckets (for knowledge points)
     const stageLabels = ['刚录入', '第1轮', '第2轮', '第3轮', '第4+轮', '已牢记'];
     const stageCounts = [0, 0, 0, 0, 0, 0];
-    allEnriched.forEach(({ task: t, metrics: m }) => {
+    kpEnriched.forEach(({ task: t, metrics: m }) => {
       if (t.mastery === 'mastered') stageCounts[5]++;
       else if (m.doneRounds <= 0) stageCounts[0]++;
       else if (m.doneRounds === 1) stageCounts[1]++;
@@ -3583,7 +3756,7 @@ Script.complete();`;
       else stageCounts[4]++;
     });
 
-    const subjects = Array.from(new Set(allReviews.map((t) => t.category || '未分组')));
+    const subjects = Array.from(new Set(activePool.map((x) => x.task.category || '未分组')));
     if (state.mistakeSubject !== 'all' && !subjects.includes(state.mistakeSubject)) {
       state.mistakeSubject = 'all';
     }
@@ -3592,25 +3765,23 @@ Script.complete();`;
     return `
       <div class="page-header">
         <div>
-          <div class="page-date">艾宾浩斯遗忘曲线 · 智能防忘引擎</div>
+          <div class="page-date">错题订正 + 知识点遗忘曲线 · 明日起自动排期</div>
           <h1 class="page-title">${esc(p.reviewNotebook)}</h1>
         </div>
-        <button type="button" class="btn-primary btn-sm" data-action="open-quick-mistake">+ 一键记错题</button>
+        <button type="button" class="btn-primary btn-sm" data-action="open-quick-mistake">+ 一键记录</button>
       </div>
 
       <section class="card mistake-hero">
         <div class="mistake-hero-top">
           <div>
-            <div class="mistake-hero-kicker">遗忘曲线实时监测</div>
+            <div class="mistake-hero-kicker">错题与知识点双轨管理</div>
             <div class="mistake-hero-big tabular">
-              ${allReviews.length === 0 ? '0' : dueCount}<span style="font-size:15px;font-weight:500;color:var(--text-secondary);margin-left:5px;">题今日待复习</span>
+              ${wqDueCount + kpDueCount}<span style="font-size:15px;font-weight:500;color:var(--text-secondary);margin-left:5px;">项今日待处理</span>
             </div>
             <div class="mistake-hero-sub">
               ${allReviews.length === 0
-                ? '一键录入错误知识点，系统按遗忘曲线自动排期并滚动推送复习。'
-                : (dueCount > 0
-                  ? `共收录 ${allReviews.length} 条知识点 · 系统已按遗忘风险从高到低排好滚动队列`
-                  : `共收录 ${allReviews.length} 条知识点 · 今日必复已清零，可随时开启滚动巩固`)}
+                ? '可分开记录「错题订正」（明日提醒、完成后自动删除）与「错误知识点」（明日起按遗忘曲线周期复习）。'
+                : `待订正错题 ${wqEnriched.length} 道（今日 ${wqDueCount}）· 错误知识点 ${kpEnriched.length} 条（今日待复 ${kpDueCount}）`}
             </div>
           </div>
           <div class="ring-box">
@@ -3621,59 +3792,74 @@ Script.complete();`;
 
         <div class="mistake-stat-strip">
           <div class="mistake-stat-pill">
-            <div class="mistake-stat-num tabular" style="color:var(--red);">${weakCount}</div>
-            <div class="mistake-stat-lbl">未掌握</div>
+            <div class="mistake-stat-num tabular" style="color:var(--orange);">${wqEnriched.length}</div>
+            <div class="mistake-stat-lbl">待订正错题</div>
           </div>
           <div class="mistake-stat-pill">
-            <div class="mistake-stat-num tabular" style="color:var(--orange);">${revCount}</div>
-            <div class="mistake-stat-lbl">待巩固</div>
+            <div class="mistake-stat-num tabular" style="color:var(--red);">${weakCount}</div>
+            <div class="mistake-stat-lbl">薄弱知识点</div>
           </div>
           <div class="mistake-stat-pill">
             <div class="mistake-stat-num tabular" style="color:var(--green);">${masCount}</div>
-            <div class="mistake-stat-lbl">已掌握</div>
+            <div class="mistake-stat-lbl">已掌握知识点</div>
           </div>
         </div>
 
         <div class="mistake-hero-actions">
           <button type="button" class="btn-primary" id="btn-launch-auto-review" data-action="open-auto-review">
-            ▶ 遗忘曲线滚动复习
+            ▶ 知识点遗忘曲线复习
           </button>
           <button type="button" class="btn-secondary" data-action="open-quick-mistake">
-            + 一键记错题
+            + 记错题 / 知识点
           </button>
         </div>
       </section>
 
-      <section class="card ebbinghaus-strip">
-        <div class="ebbinghaus-strip-head">
-          <span style="font-size:13px;font-weight:700;">遗忘曲线稳固阶段分布</span>
-          <span style="font-size:11px;color:var(--text-tertiary);">平均记忆留存 ${avgRetention}%</span>
-        </div>
-        <div class="ebbinghaus-nodes">
-          ${stageLabels.map((lbl, i) => `
-            <div class="curve-node ${stageCounts[i] > 0 ? 'has-items' : ''}">
-              <span class="curve-node-count tabular">${stageCounts[i]}</span>
-              <span class="curve-node-day">${lbl}</span>
-            </div>
-          `).join('')}
-        </div>
-      </section>
+      <div class="segmented-control" style="width:100%;display:grid;grid-template-columns:1fr 1fr 1fr;margin-bottom:12px;">
+        <button type="button" class="seg-btn ${state.mistakeKindFilter === 'all' ? 'is-active' : ''}" data-action="set-mistake-kind" data-kind="all">全部 (${allReviews.length})</button>
+        <button type="button" class="seg-btn ${state.mistakeKindFilter === 'wrong_question' ? 'is-active' : ''}" data-action="set-mistake-kind" data-kind="wrong_question">错题订正 (${wqEnriched.length})</button>
+        <button type="button" class="seg-btn ${state.mistakeKindFilter === 'knowledge_point' ? 'is-active' : ''}" data-action="set-mistake-kind" data-kind="knowledge_point">错误知识点 (${kpEnriched.length})</button>
+      </div>
+
+      ${state.mistakeKindFilter !== 'wrong_question' ? `
+        <section class="card ebbinghaus-strip">
+          <div class="ebbinghaus-strip-head">
+            <span style="font-size:13px;font-weight:700;">错误知识点 · 遗忘曲线阶段分布</span>
+            <span style="font-size:11px;color:var(--text-tertiary);">平均记忆留存 ${avgRetention}%</span>
+          </div>
+          <div class="ebbinghaus-nodes">
+            ${stageLabels.map((lbl, i) => `
+              <div class="curve-node ${stageCounts[i] > 0 ? 'has-items' : ''}">
+                <span class="curve-node-count tabular">${stageCounts[i]}</span>
+                <span class="curve-node-day">${lbl}</span>
+              </div>
+            `).join('')}
+          </div>
+        </section>
+      ` : `
+        <section class="wq-rule-card" style="margin-bottom:12px;">
+          <div class="wq-rule-card-title">错题订正自动流转规则</div>
+          新录入的错题默认排入<strong>明日</strong>提醒订正；在任务栏或此处勾选「完成订正」后将<strong>自动删除</strong>，若当日未完成则<strong>自动顺延至下一日</strong>继续提醒。
+        </section>
+      `}
 
       <div class="mistake-search-wrap">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="11" cy="11" r="7"/>
           <path d="M20 20l-3.5-3.5"/>
         </svg>
-        <input id="input-mistake-search" class="mistake-search-input" type="search" placeholder="搜索错题知识点、解析或错因…" value="${esc(state.mistakeSearch)}" />
+        <input id="input-mistake-search" class="mistake-search-input" type="search" placeholder="搜索错题、知识点、解析或错因…" value="${esc(state.mistakeSearch)}" />
         ${state.mistakeSearch ? `<button type="button" class="btn-secondary btn-sm" style="padding:4px 9px;font-size:11px;" data-action="clear-mistake-search">清空</button>` : ''}
       </div>
 
       <div class="mistake-filter-scroll">
-        <button type="button" class="choice-chip ${state.mistakeFilter === 'all' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="all">全部 (${allReviews.length})</button>
-        <button type="button" class="choice-chip ${state.mistakeFilter === 'due' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="due">今日待复 (${dueCount})</button>
-        <button type="button" class="choice-chip ${state.mistakeFilter === 'weak' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="weak">未掌握 (${weakCount})</button>
-        <button type="button" class="choice-chip ${state.mistakeFilter === 'reviewing' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="reviewing">待巩固 (${revCount})</button>
-        <button type="button" class="choice-chip ${state.mistakeFilter === 'mastered' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="mastered">已掌握 (${masCount})</button>
+        <button type="button" class="choice-chip ${state.mistakeFilter === 'all' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="all">全部 (${activePool.length})</button>
+        <button type="button" class="choice-chip ${state.mistakeFilter === 'due' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="due">今日待处理 (${dueCount})</button>
+        ${state.mistakeKindFilter !== 'wrong_question' ? `
+          <button type="button" class="choice-chip ${state.mistakeFilter === 'weak' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="weak">未掌握 (${weakCount})</button>
+          <button type="button" class="choice-chip ${state.mistakeFilter === 'reviewing' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="reviewing">待巩固 (${revCount})</button>
+          <button type="button" class="choice-chip ${state.mistakeFilter === 'mastered' ? 'is-selected' : ''}" data-action="set-mistake-filter" data-filter="mastered">已掌握 (${masCount})</button>
+        ` : ''}
       </div>
 
       ${subjects.length >= 2 ? `
@@ -4498,9 +4684,14 @@ Script.complete();`;
     const cats = (state.data && state.data.categories) || [];
     const initialCat = isEdit ? (existingTask.category || '') : (prefillCategory || (cats[0] ? cats[0].name : ''));
     const initialTitle = isEdit ? existingTask.title : '';
-    const initialDate = isEdit ? existingTask.date : state.selectedDate;
-    const initialDur = isEdit ? (existingTask.durationMin || 45) : (defaultType === 'review' ? 25 : 45);
     let taskType = isEdit ? (isReviewTask(existingTask) ? 'review' : 'normal') : (defaultType === 'review' ? 'review' : 'normal');
+    let mistakeKind = isEdit && isReviewTask(existingTask)
+      ? getMistakeKind(existingTask)
+      : (state.mistakeKindFilter === 'wrong_question' ? 'wrong_question' : 'knowledge_point');
+    const initialDate = isEdit
+      ? existingTask.date
+      : (taskType === 'review' ? tomorrowKey() : state.selectedDate);
+    const initialDur = isEdit ? (existingTask.durationMin || 45) : (defaultType === 'review' ? 25 : 45);
     let reviewPreset = isEdit && existingTask.reviewPreset && REVIEW_PRESETS[existingTask.reviewPreset]
       ? existingTask.reviewPreset
       : 'ebbinghaus';
@@ -4509,12 +4700,14 @@ Script.complete();`;
     const initialNote = isEdit ? (existingTask.mistakeNote || '') : '';
     const existingDoneDates = new Set(isEdit && Array.isArray(existingTask.completedDates) ? existingTask.completedDates : []);
     let scheduleDirty = false;
+    let dateManuallyChanged = isEdit;
     let submitting = false;
 
     function computeCurrentReviewDates() {
       const dateInputEl = document.getElementById('input-task-date');
       const baseDate = (dateInputEl && dateInputEl.value) || initialDate;
-      if (isEdit && isReviewTask(existingTask) && !scheduleDirty && Array.isArray(existingTask.reviewDates) && existingTask.reviewDates.length) {
+      if (mistakeKind === 'wrong_question') return [baseDate];
+      if (isEdit && isKnowledgePointTask(existingTask) && !scheduleDirty && Array.isArray(existingTask.reviewDates) && existingTask.reviewDates.length) {
         return existingTask.reviewDates;
       }
       return generateReviewDates(baseDate, reviewPreset);
@@ -4529,10 +4722,14 @@ Script.complete();`;
     }
 
     const initialDates = taskType === 'review'
-      ? (isEdit && isReviewTask(existingTask) && Array.isArray(existingTask.reviewDates) && existingTask.reviewDates.length
-        ? existingTask.reviewDates
-        : generateReviewDates(initialDate, reviewPreset))
-      : generateReviewDates(initialDate, reviewPreset);
+      ? (mistakeKind === 'wrong_question'
+        ? [initialDate]
+        : (isEdit && isKnowledgePointTask(existingTask) && Array.isArray(existingTask.reviewDates) && existingTask.reviewDates.length
+          ? existingTask.reviewDates
+          : generateReviewDates(initialDate, reviewPreset)))
+      : generateReviewDates(tomorrowKey(), reviewPreset);
+
+    const isInitWrongQ = taskType === 'review' && mistakeKind === 'wrong_question';
 
     openFormModal({
       title: isEdit ? '编辑任务' : (taskType === 'review' ? `新建${p.reviewLabel}` : '新建学习任务'),
@@ -4562,8 +4759,8 @@ Script.complete();`;
             </div>
 
             <div class="field">
-              <label class="field-label" id="lbl-task-title" for="input-task-title">${taskType === 'review' ? '错题 / 复习知识点名称' : '具体任务内容'}</label>
-              <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="${taskType === 'review' ? '例如：高数定积分换元错题 / 民法善意取得易错点' : '例如：刷完第三章真题并整理笔记'}" value="${esc(initialTitle)}" />
+              <label class="field-label" id="lbl-task-title" for="input-task-title">${taskType === 'review' ? (isInitWrongQ ? '错题内容 / 题号' : '错误知识点名称') : '具体任务内容'}</label>
+              <input id="input-task-title" class="input" type="text" required maxlength="60" placeholder="${taskType === 'review' ? (isInitWrongQ ? '例如：高数第三章第 8 题定积分换元做错' : '例如：定积分换元漏改上下限 / 民法善意取得') : '例如：刷完第三章真题并整理笔记'}" value="${esc(initialTitle)}" />
             </div>
           </div>
 
@@ -4571,7 +4768,7 @@ Script.complete();`;
           <div class="modal-group-card">
             <div class="form-grid-2">
               <div class="field">
-                <label class="field-label" id="lbl-task-date" for="input-task-date">${taskType === 'review' ? '首次复习日期' : '安排日期'}</label>
+                <label class="field-label" id="lbl-task-date" for="input-task-date">${taskType === 'review' ? (isInitWrongQ ? '提醒订正日期（默认明日）' : '首次复习日期（默认明日）') : '安排日期'}</label>
                 <input id="input-task-date" class="input tabular" type="date" required value="${esc(initialDate)}" />
               </div>
               <div class="field">
@@ -4592,44 +4789,61 @@ Script.complete();`;
 
             <div id="review-plan-section" class="${taskType === 'review' ? '' : 'hidden'}">
               <div class="field">
-                <label class="field-label">智能复习周期（自动排入时间轴与月历）</label>
-                <div class="chip-row" id="review-preset-chips">
-                  ${Object.values(REVIEW_PRESETS).map((pr) => `
-                    <button type="button" class="choice-chip ${pr.id === reviewPreset ? 'is-selected' : ''}" data-pick-preset="${pr.id}">${esc(pr.short)}</button>
-                  `).join('')}
-                </div>
-                <div id="review-preset-desc" style="font-size:12px;color:var(--text-secondary);margin-top:6px;">
-                  ${esc((REVIEW_PRESETS[reviewPreset] || REVIEW_PRESETS.ebbinghaus).desc)}
-                </div>
-                <div class="review-schedule-preview" id="review-schedule-preview">
-                  ${renderScheduleChipsHTML(initialDates)}
+                <label class="field-label">区分类型：错题订正 / 错误知识点</label>
+                <div class="segmented-control" style="width:100%;display:grid;grid-template-columns:1fr 1fr;">
+                  <button type="button" class="seg-btn ${mistakeKind === 'wrong_question' ? 'is-active' : ''}" data-pick-mkind="wrong_question">错题订正</button>
+                  <button type="button" class="seg-btn ${mistakeKind === 'knowledge_point' ? 'is-active' : ''}" data-pick-mkind="knowledge_point">错误知识点</button>
                 </div>
               </div>
 
-              <div class="field">
-                <label class="field-label">当前掌握程度</label>
-                <div class="chip-row" id="review-mastery-chips">
-                  ${Object.values(MASTERY_LEVELS).map((m) => `
-                    <button type="button" class="choice-chip ${m.id === mastery ? 'is-selected' : ''}" data-pick-mastery="${m.id}">${m.label}</button>
-                  `).join('')}
+              <div id="wq-mode-info" class="field ${mistakeKind === 'wrong_question' ? '' : 'hidden'}">
+                <div class="wq-rule-card">
+                  <div class="wq-rule-card-title" id="wq-mode-title">提醒订正日期：${formatShortMD(initialDate)}</div>
+                  <div>在任务列表中勾选完成后将<strong>自动删除该任务</strong>；若当日未完成，次日将<strong>自动移至下一日</strong>再次提醒。</div>
+                </div>
+              </div>
+
+              <div id="kp-curve-fields" class="${mistakeKind === 'knowledge_point' ? '' : 'hidden'}">
+                <div class="field">
+                  <label class="field-label">遗忘曲线复习周期（默认从明日起自动排期）</label>
+                  <div class="chip-row" id="review-preset-chips">
+                    ${Object.values(REVIEW_PRESETS).map((pr) => `
+                      <button type="button" class="choice-chip ${pr.id === reviewPreset ? 'is-selected' : ''}" data-pick-preset="${pr.id}">${esc(pr.short)}</button>
+                    `).join('')}
+                  </div>
+                  <div id="review-preset-desc" style="font-size:12px;color:var(--text-secondary);margin-top:6px;">
+                    ${esc((REVIEW_PRESETS[reviewPreset] || REVIEW_PRESETS.ebbinghaus).desc)}
+                  </div>
+                  <div class="review-schedule-preview" id="review-schedule-preview">
+                    ${renderScheduleChipsHTML(initialDates)}
+                  </div>
+                </div>
+
+                <div class="field">
+                  <label class="field-label">当前掌握程度</label>
+                  <div class="chip-row" id="review-mastery-chips">
+                    ${Object.values(MASTERY_LEVELS).map((m) => `
+                      <button type="button" class="choice-chip ${m.id === mastery ? 'is-selected' : ''}" data-pick-mastery="${m.id}">${m.label}</button>
+                    `).join('')}
+                  </div>
                 </div>
               </div>
 
               <div class="field" style="margin-bottom:0;">
                 <label class="field-label" for="input-mistake-note">错因 / 关键解题思路（选填）</label>
-                <textarea id="input-mistake-note" class="input" maxlength="400" rows="3" placeholder="记录当时为什么做错、关键公式或易混陷阱，下次复习一眼回想…">${esc(initialNote)}</textarea>
+                <textarea id="input-mistake-note" class="input" maxlength="400" rows="3" placeholder="记录当时为什么做错、关键公式或易混陷阱，订正或复习时一眼回想…">${esc(initialNote)}</textarea>
               </div>
             </div>
           </div>
 
           <div style="margin-top:6px;">
-            <button type="submit" id="btn-save-task" class="btn-primary btn-block">${isEdit ? '保存修改' : (taskType === 'review' ? '生成复习计划并排入时间轴' : '添加到任务序列')}</button>
+            <button type="submit" id="btn-save-task" class="btn-primary btn-block">${isEdit ? '保存修改' : (taskType === 'review' ? (isInitWrongQ ? '排入明日订正提醒' : '明日起生成复习计划') : '添加到任务序列')}</button>
             ${isEdit ? `
               <div class="btn-row" style="margin-top:10px;">
-                <button type="button" id="btn-move-tomorrow" class="btn-secondary">${taskType === 'review' ? '明日加练一轮' : '移至明日'}</button>
+                <button type="button" id="btn-move-tomorrow" class="btn-secondary">${taskType === 'review' && !isInitWrongQ ? '明日加练一轮' : '移至明日'}</button>
                 <button type="button" id="btn-focus-this-task" class="btn-secondary" style="color:var(--accent);">专注此任务</button>
               </div>
-              <button type="button" id="btn-convert-review" class="btn-secondary btn-block ${taskType === 'review' ? 'hidden' : ''}" style="margin-top:10px;color:var(--orange);">转为${esc(p.reviewLabel)}计划（自动按遗忘曲线排期）</button>
+              <button type="button" id="btn-convert-review" class="btn-secondary btn-block ${taskType === 'review' ? 'hidden' : ''}" style="margin-top:10px;color:var(--orange);">转为${esc(p.reviewLabel)}计划（默认明日起记）</button>
             ` : ''}
           </div>
         </form>
@@ -4643,15 +4857,35 @@ Script.complete();`;
     const dateInput = document.getElementById('input-task-date');
     const normalSec = document.getElementById('normal-repeat-section');
     const reviewSec = document.getElementById('review-plan-section');
+    const wqModeInfo = document.getElementById('wq-mode-info');
+    const wqModeTitle = document.getElementById('wq-mode-title');
+    const kpCurveFields = document.getElementById('kp-curve-fields');
     const presetDescEl = document.getElementById('review-preset-desc');
     const previewEl = document.getElementById('review-schedule-preview');
     const saveBtn = document.getElementById('btn-save-task');
     const convertBtn = document.getElementById('btn-convert-review');
 
     function refreshReviewPreview() {
+      const dVal = dateInput.value || tomorrowKey();
+      if (wqModeTitle) wqModeTitle.textContent = `提醒订正日期：${formatShortMD(dVal)}${dVal === tomorrowKey() ? '（明日）' : ''}`;
       const dates = computeCurrentReviewDates();
       previewEl.innerHTML = renderScheduleChipsHTML(dates);
       presetDescEl.textContent = (REVIEW_PRESETS[reviewPreset] || REVIEW_PRESETS.ebbinghaus).desc;
+    }
+
+    function syncMistakeKindUI() {
+      const isRev = taskType === 'review';
+      const isWQ = isRev && mistakeKind === 'wrong_question';
+      modalPage.querySelectorAll('[data-pick-mkind]').forEach((b) => b.classList.toggle('is-active', b.dataset.pickMkind === mistakeKind));
+      if (wqModeInfo) wqModeInfo.classList.toggle('hidden', !isWQ);
+      if (kpCurveFields) kpCurveFields.classList.toggle('hidden', isWQ);
+      if (isRev) {
+        titleLabel.textContent = isWQ ? '错题内容 / 题号' : '错误知识点名称';
+        titleInput.placeholder = isWQ ? '例如：高数第三章第 8 题定积分换元做错' : '例如：定积分换元漏改上下限 / 民法善意取得';
+        dateLabel.textContent = isWQ ? '提醒订正日期（默认明日）' : '首次复习日期（默认明日）';
+        if (!isEdit) saveBtn.textContent = isWQ ? '排入明日订正提醒' : '明日起生成复习计划';
+        refreshReviewPreview();
+      }
     }
 
     function setTaskTypeMode(nextType) {
@@ -4661,13 +4895,16 @@ Script.complete();`;
       normalSec.classList.toggle('hidden', isRev);
       reviewSec.classList.toggle('hidden', !isRev);
       if (convertBtn) convertBtn.classList.toggle('hidden', isRev);
-      titleLabel.textContent = isRev ? '错题 / 复习知识点名称' : '具体任务内容';
-      titleInput.placeholder = isRev ? '例如：高数定积分换元错题 / 民法善意取得易错点' : '例如：刷完第三章真题并整理笔记';
-      dateLabel.textContent = isRev ? '首次复习日期' : '安排日期';
-      if (!isEdit) saveBtn.textContent = isRev ? '生成复习计划并排入时间轴' : '添加到任务序列';
       if (isRev) {
+        if (!dateManuallyChanged) dateInput.value = tomorrowKey();
         scheduleDirty = true;
-        refreshReviewPreview();
+        syncMistakeKindUI();
+      } else {
+        if (!dateManuallyChanged) dateInput.value = state.selectedDate;
+        titleLabel.textContent = '具体任务内容';
+        titleInput.placeholder = '例如：刷完第三章真题并整理笔记';
+        dateLabel.textContent = '安排日期';
+        if (!isEdit) saveBtn.textContent = '添加到任务序列';
       }
     }
 
@@ -4675,11 +4912,19 @@ Script.complete();`;
       btn.addEventListener('click', () => setTaskTypeMode(btn.dataset.pickType));
     });
 
+    modalPage.querySelectorAll('[data-pick-mkind]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        mistakeKind = btn.dataset.pickMkind;
+        scheduleDirty = true;
+        syncMistakeKindUI();
+      });
+    });
+
     if (convertBtn) {
       convertBtn.addEventListener('click', () => {
         setTaskTypeMode('review');
         reviewSec.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        showHud('已切换为艾宾浩斯复习计划，点「保存」生效', 'var(--orange)');
+        showHud('已切换为错题 / 知识点计划，点「保存」生效', 'var(--orange)');
       });
     }
 
@@ -4700,6 +4945,7 @@ Script.complete();`;
     });
 
     dateInput.addEventListener('change', () => {
+      dateManuallyChanged = true;
       if (taskType === 'review') {
         scheduleDirty = true;
         refreshReviewPreview();
@@ -4728,10 +4974,10 @@ Script.complete();`;
     if (isEdit) {
       document.getElementById('btn-move-tomorrow').addEventListener('click', async () => {
         blurActiveInput();
-        const tom = shiftDateISO(todayKey(), 1);
+        const tom = tomorrowKey();
         closeSheet();
         try {
-          if (isReviewTask(existingTask)) {
+          if (isKnowledgePointTask(existingTask)) {
             const nextDates = Array.from(new Set([...(existingTask.reviewDates || [existingTask.date]), tom])).sort();
             await api(`/api/tasks/${existingTask.id}`, {
               method: 'PATCH',
@@ -4742,7 +4988,7 @@ Script.complete();`;
           } else {
             await api(`/api/tasks/${existingTask.id}`, {
               method: 'PATCH',
-              body: JSON.stringify({ scheduledDate: tom, repeatDaily: false })
+              body: JSON.stringify({ scheduledDate: tom, repeatDaily: false, reviewDates: isWrongQuestionTask(existingTask) ? [tom] : undefined })
             });
             await loadBootstrap(true);
             showHud('已移至明日计划');
@@ -4767,12 +5013,13 @@ Script.complete();`;
       blurActiveInput();
       const category = catInput.value.trim() || '未分组';
       const title = titleInput.value.trim();
-      const date = dateInput.value || state.selectedDate;
+      const date = dateInput.value || (taskType === 'review' ? tomorrowKey() : state.selectedDate);
       const durationMin = Number(document.getElementById('input-task-duration').value) || 30;
       const mistakeNote = (document.getElementById('input-mistake-note').value || '').trim();
       if (!title) return;
       submitting = true;
-      const reviewDates = taskType === 'review' ? computeCurrentReviewDates() : [];
+      const isWQ = taskType === 'review' && mistakeKind === 'wrong_question';
+      const reviewDates = taskType === 'review' ? (isWQ ? [date] : computeCurrentReviewDates()) : [];
 
       closeSheet();
       try {
@@ -4786,14 +5033,15 @@ Script.complete();`;
               durationMin,
               repeatDaily: taskType === 'review' ? false : repeatDaily,
               taskType,
-              reviewPreset: taskType === 'review' ? reviewPreset : '',
+              mistakeKind: taskType === 'review' ? mistakeKind : '',
+              reviewPreset: taskType === 'review' ? (isWQ ? 'correct_once' : reviewPreset) : '',
               reviewDates,
               mistakeNote: taskType === 'review' ? mistakeNote : '',
-              mastery: taskType === 'review' ? mastery : ''
+              mastery: taskType === 'review' && !isWQ ? mastery : ''
             })
           });
           await loadBootstrap(true);
-          showHud(taskType === 'review' ? `复习计划已更新（共 ${reviewDates.length} 轮）` : '任务已更新');
+          showHud(isWQ ? `错题订正已排入 ${formatShortMD(date)}` : (taskType === 'review' ? `复习计划已更新（共 ${reviewDates.length} 轮）` : '任务已更新'));
         } else {
           await api('/api/tasks', {
             method: 'POST',
@@ -4805,22 +5053,27 @@ Script.complete();`;
               durationMin,
               repeatDaily: taskType === 'review' ? false : repeatDaily,
               taskType,
-              reviewPreset: taskType === 'review' ? reviewPreset : '',
+              mistakeKind: taskType === 'review' ? mistakeKind : '',
+              reviewPreset: taskType === 'review' ? (isWQ ? 'correct_once' : reviewPreset) : '',
               reviewDates,
               mistakeNote: taskType === 'review' ? mistakeNote : '',
-              mastery: taskType === 'review' ? mastery : ''
+              mastery: taskType === 'review' && !isWQ ? mastery : ''
             })
           });
-          state.selectedDate = date;
-          state.viewMonth = currentMonthKey(date);
+          if (state.activeTab === 'today') {
+            state.selectedDate = date;
+            state.viewMonth = currentMonthKey(date);
+          }
           if (state.collapsedCategories.has(category)) {
             state.collapsedCategories.delete(category);
             saveCollapsedCategories();
           }
           await loadBootstrap(true);
-          showHud(taskType === 'review'
-            ? `已生成 ${reviewDates.length} 轮复习计划并自动排入时间轴`
-            : `已添加到「${category}」`);
+          showHud(isWQ
+            ? `已设为错题订正，将于 ${formatShortMD(date)} 提醒完成`
+            : (taskType === 'review'
+              ? `已从 ${formatShortMD(date)} 起生成 ${reviewDates.length} 轮复习计划`
+              : `已添加到「${category}」`));
         }
       } catch (err) {
         showHud(err.message, 'var(--red)');
@@ -4834,21 +5087,27 @@ Script.complete();`;
   // 1-Tap Quick Mistake / Knowledge Point Recorder (一键记录错误知识点)
   // =========================================================================
 
-  function openQuickMistakeModal(prefillCategory = '') {
+  function openQuickMistakeModal(prefillCategory = '', defaultKind = '') {
     if (!state.data || !state.data.user) return;
     const p = getPack();
     const cats = (state.data && state.data.categories) || [];
     const defaultCat = prefillCategory
       || state.lastMistakeCategory
       || (cats[0] ? cats[0].name : '错题精练');
+    let selectedKind = (defaultKind === 'wrong_question' || defaultKind === 'knowledge_point')
+      ? defaultKind
+      : (state.mistakeKindFilter === 'wrong_question' ? 'wrong_question' : 'knowledge_point');
     let selectedReason = '';
     let selectedPreset = 'ebbinghaus';
     let submitting = false;
 
+    const tomorrow = tomorrowKey();
     function previewDatesHtml() {
-      const dates = generateReviewDates(todayKey(), selectedPreset);
-      return dates.map((d, i) => `<span class="review-date-chip">第${i + 1}轮 ${formatShortMD(d)}</span>`).join('');
+      const dates = generateReviewDates(tomorrow, selectedPreset);
+      return dates.map((d, i) => `<span class="review-date-chip">第${i + 1}轮 ${i === 0 ? '明日 ' : ''}${formatShortMD(d)}</span>`).join('');
     }
+
+    const isInitWQ = selectedKind === 'wrong_question';
 
     openFormModal({
       title: `一键记录${p.reviewLabel}`,
@@ -4856,16 +5115,23 @@ Script.complete();`;
       formId: 'form-quick-mistake',
       bodyHtml: `
         <form id="form-quick-mistake">
-          <div class="modal-group-title">错误知识点（10 秒速记）</div>
+          <div style="margin-bottom:14px;">
+            <div class="segmented-control" style="width:100%;display:grid;grid-template-columns:1fr 1fr;">
+              <button type="button" class="seg-btn ${isInitWQ ? 'is-active' : ''}" data-qm-kind="wrong_question">错题订正</button>
+              <button type="button" class="seg-btn ${!isInitWQ ? 'is-active' : ''}" data-qm-kind="knowledge_point">错误知识点</button>
+            </div>
+          </div>
+
+          <div class="modal-group-title" id="qm-section-title">${isInitWQ ? '错题速记（明日提醒订正）' : '错误知识点（明日起进入复习计划）'}</div>
           <div class="modal-group-card">
             <div class="field">
-              <label class="field-label" for="input-qm-title">错题 / 易忘知识点标题</label>
-              <input id="input-qm-title" class="input" type="text" required maxlength="60" placeholder="例如：定积分换元漏改上下限 / 善意取得构成要件" />
+              <label class="field-label" id="lbl-qm-title" for="input-qm-title">${isInitWQ ? '错题内容 / 题号' : '错误知识点标题'}</label>
+              <input id="input-qm-title" class="input" type="text" required maxlength="60" placeholder="${isInitWQ ? '例如：高数第三章第 8 题定积分换元做错' : '例如：定积分换元漏改上下限 / 善意取得构成要件'}" />
             </div>
 
             <div class="field">
-              <label class="field-label" for="input-qm-note">正确解析 / 避坑要点（复习时可遮盖自测，选填）</label>
-              <textarea id="input-qm-note" class="input" maxlength="400" rows="3" placeholder="写下关键公式、正确结论或易混陷阱，遗忘曲线滚动复习时会自动呈现帮助你强化记忆…"></textarea>
+              <label class="field-label" id="lbl-qm-note" for="input-qm-note">${isInitWQ ? '订正思路 / 错因备注（选填）' : '正确解析 / 避坑要点（复习时可遮盖自测，选填）'}</label>
+              <textarea id="input-qm-note" class="input" maxlength="400" rows="3" placeholder="${isInitWQ ? '写下这道题卡壳的步骤或正确思路，明日订正时一眼看懂…' : '写下关键公式、正确结论或易混陷阱，遗忘曲线滚动复习时会自动呈现帮助你强化记忆…'}"></textarea>
             </div>
 
             <div class="field" style="margin-bottom:0;">
@@ -4878,7 +5144,7 @@ Script.complete();`;
             </div>
           </div>
 
-          <div class="modal-group-title">归属科目与遗忘曲线排期</div>
+          <div class="modal-group-title" id="qm-plan-title">${isInitWQ ? '归属科目与订正提醒规则' : '归属科目与遗忘曲线排期（明日起）'}</div>
           <div class="modal-group-card">
             <div class="field">
               <label class="field-label" for="input-qm-cat">所属科目大标题</label>
@@ -4892,8 +5158,13 @@ Script.complete();`;
               ` : ''}
             </div>
 
-            <div class="field" style="margin-bottom:0;">
-              <label class="field-label">遗忘曲线复习周期（自动排入时间轴与滚动复习舱）</label>
+            <div id="qm-wq-rule-box" class="wq-rule-card ${isInitWQ ? '' : 'hidden'}">
+              <div class="wq-rule-card-title">明日提醒订正（${formatShortMD(tomorrow)}）</div>
+              <div>自动加入<strong>明日</strong>学习任务提醒订正；勾选完成后<strong>自动删除该项任务</strong>，若当日未完成则<strong>自动移至下一日</strong>继续提醒。</div>
+            </div>
+
+            <div id="qm-kp-curve-box" class="field ${!isInitWQ ? '' : 'hidden'}" style="margin-bottom:0;">
+              <label class="field-label">遗忘曲线复习周期（自明日 ${formatShortMD(tomorrow)} 起自动排期）</label>
               <div class="chip-row" id="qm-preset-chips">
                 ${['ebbinghaus', 'ebbinghaus_long', 'sprint'].map((pid) => {
                   const pr = REVIEW_PRESETS[pid];
@@ -4910,7 +5181,7 @@ Script.complete();`;
           </div>
 
           <div style="margin-top:6px;display:flex;flex-direction:column;gap:10px;">
-            <button type="submit" id="btn-qm-save" class="btn-primary btn-block">一键入库并生成遗忘曲线计划</button>
+            <button type="submit" id="btn-qm-save" class="btn-primary btn-block">${isInitWQ ? `明日（${formatShortMD(tomorrow)}）提醒订正错题` : '明日起进入遗忘曲线复习计划'}</button>
             <button type="button" id="btn-qm-save-next" class="btn-secondary btn-block" style="color:var(--accent);">保存并继续记录下一条</button>
           </div>
         </form>
@@ -4922,6 +5193,34 @@ Script.complete();`;
     const catEl = document.getElementById('input-qm-cat');
     const descEl = document.getElementById('qm-preset-desc');
     const previewEl = document.getElementById('qm-schedule-preview');
+    const secTitleEl = document.getElementById('qm-section-title');
+    const planTitleEl = document.getElementById('qm-plan-title');
+    const lblTitleEl = document.getElementById('lbl-qm-title');
+    const lblNoteEl = document.getElementById('lbl-qm-note');
+    const wqRuleBox = document.getElementById('qm-wq-rule-box');
+    const kpCurveBox = document.getElementById('qm-kp-curve-box');
+    const saveBtnEl = document.getElementById('btn-qm-save');
+
+    function syncQuickKindUI() {
+      const isWQ = selectedKind === 'wrong_question';
+      modalPage.querySelectorAll('[data-qm-kind]').forEach((b) => b.classList.toggle('is-active', b.dataset.qmKind === selectedKind));
+      if (secTitleEl) secTitleEl.textContent = isWQ ? '错题速记（明日提醒订正）' : '错误知识点（明日起进入复习计划）';
+      if (planTitleEl) planTitleEl.textContent = isWQ ? '归属科目与订正提醒规则' : '归属科目与遗忘曲线排期（明日起）';
+      if (lblTitleEl) lblTitleEl.textContent = isWQ ? '错题内容 / 题号' : '错误知识点标题';
+      if (titleEl) titleEl.placeholder = isWQ ? '例如：高数第三章第 8 题定积分换元做错' : '例如：定积分换元漏改上下限 / 善意取得构成要件';
+      if (lblNoteEl) lblNoteEl.textContent = isWQ ? '订正思路 / 错因备注（选填）' : '正确解析 / 避坑要点（复习时可遮盖自测，选填）';
+      if (noteEl) noteEl.placeholder = isWQ ? '写下这道题卡壳的步骤或正确思路，明日订正时一眼看懂…' : '写下关键公式、正确结论或易混陷阱，遗忘曲线滚动复习时会自动呈现帮助你强化记忆…';
+      if (wqRuleBox) wqRuleBox.classList.toggle('hidden', !isWQ);
+      if (kpCurveBox) kpCurveBox.classList.toggle('hidden', isWQ);
+      if (saveBtnEl) saveBtnEl.textContent = isWQ ? `明日（${formatShortMD(tomorrow)}）提醒订正错题` : '明日起进入遗忘曲线复习计划';
+    }
+
+    modalPage.querySelectorAll('[data-qm-kind]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        selectedKind = btn.dataset.qmKind;
+        syncQuickKindUI();
+      });
+    });
 
     modalPage.querySelectorAll('[data-qm-reason]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -4958,13 +5257,14 @@ Script.complete();`;
       const title = titleEl.value.trim();
       const category = catEl.value.trim() || '错题精练';
       const mistakeNote = noteEl.value.trim();
+      const isWQ = selectedKind === 'wrong_question';
       if (!title) {
-        showHud('请先填写错误知识点标题', 'var(--orange)');
+        showHud(isWQ ? '请先填写错题内容' : '请先填写错误知识点标题', 'var(--orange)');
         return;
       }
       submitting = true;
-      const today = todayKey();
-      const reviewDates = generateReviewDates(today, selectedPreset);
+      const startDay = tomorrowKey();
+      const reviewDates = isWQ ? [startDay] : generateReviewDates(startDay, selectedPreset);
       state.lastMistakeCategory = category;
       safeStorageSet('shixu_last_mistake_cat', category);
 
@@ -4975,15 +5275,16 @@ Script.complete();`;
             userId: state.userId,
             category,
             title,
-            date: today,
+            date: startDay,
             durationMin: 20,
             repeatDaily: false,
             taskType: 'review',
-            reviewPreset: selectedPreset,
+            mistakeKind: selectedKind,
+            reviewPreset: isWQ ? 'correct_once' : selectedPreset,
             reviewDates,
             mistakeNote,
             mistakeReason: selectedReason,
-            mastery: 'weak'
+            mastery: isWQ ? '' : 'weak'
           })
         });
         if (state.collapsedCategories.has(category)) {
@@ -4999,7 +5300,12 @@ Script.complete();`;
           showHud(`已入库「${title.slice(0, 12)}」，可继续记录下一条`, 'var(--green)');
         } else {
           closeSheet();
-          showHud(`已记录错题，自动排入 ${reviewDates.length} 轮遗忘曲线`, 'var(--green)');
+          showHud(
+            isWQ
+              ? `已记录错题，将于明日（${formatShortMD(startDay)}）提醒订正`
+              : `已记录错误知识点，自明日（${formatShortMD(startDay)}）起排入 ${reviewDates.length} 轮复习`,
+            'var(--green)'
+          );
         }
       } catch (err) {
         showHud(err.message || '保存失败', 'var(--red)');
@@ -5063,7 +5369,7 @@ Script.complete();`;
     ar.playing = queue.length > 0;
     ar.active = true;
 
-    const totalMistakesCount = ((state.data && state.data.tasks) || []).filter((t) => isReviewTask(t)).length;
+    const totalMistakesCount = ((state.data && state.data.tasks) || []).filter((t) => isKnowledgePointTask(t)).length;
 
     openFormModal({
       title: '遗忘曲线滚动复习',
@@ -6277,6 +6583,17 @@ Script.complete();`;
       return;
     }
     if (action === 'refresh-offline-cache') return refreshOfflineCache();
+    if (action === 'set-mistake-kind') {
+      const next = btn.dataset.kind || 'all';
+      if (state.mistakeKindFilter !== next) {
+        state.mistakeKindFilter = next;
+        if (next === 'wrong_question' && ['weak', 'reviewing', 'mastered'].includes(state.mistakeFilter)) {
+          state.mistakeFilter = 'all';
+        }
+        renderView(false);
+      }
+      return;
+    }
     if (action === 'set-mistake-filter') {
       const next = btn.dataset.filter || 'all';
       if (state.mistakeFilter !== next) {
@@ -6299,6 +6616,7 @@ Script.complete();`;
       return;
     }
     if (action === 'reset-mistake-filters') {
+      state.mistakeKindFilter = 'all';
       state.mistakeFilter = 'all';
       state.mistakeSubject = 'all';
       state.mistakeSearch = '';
@@ -6311,6 +6629,27 @@ Script.complete();`;
       const task = state.data.tasks.find((x) => x.id === id);
       if (!task) return;
       const today = todayKey();
+      if (isWrongQuestionTask(task)) {
+        const snapshotCopy = JSON.parse(JSON.stringify(task));
+        try {
+          await api(`/api/tasks/${id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ done: true, date: today })
+          });
+          await loadBootstrap(true);
+          showHud('错题已完成订正，已自动删除', 'var(--green)', {
+            label: '撤销',
+            onClick: async () => {
+              await api('/api/tasks/restore', { method: 'POST', body: JSON.stringify({ task: snapshotCopy }) });
+              await loadBootstrap(true);
+              showHud('已恢复该错题订正任务');
+            }
+          });
+        } catch (err) {
+          showHud(err.message || '操作失败', 'var(--red)');
+        }
+        return;
+      }
       const nextMastery = (task.mastery || 'weak') === 'weak' ? 'reviewing' : task.mastery;
       try {
         await api(`/api/tasks/${id}`, {
@@ -6474,6 +6813,27 @@ Script.complete();`;
       // Optimistically animate the exact row without tearing down DOM mid-spring!
       const rowEl = document.querySelector(`[data-task-row="${id}"]`);
       if (rowEl) rowEl.classList.toggle('is-done', nextDone);
+
+      // Wrong-question correction mode: checking it off completes correction & auto-deletes the task!
+      if (nextDone && isWrongQuestionTask(task)) {
+        const snapshotCopy = JSON.parse(JSON.stringify(task));
+        try {
+          await api(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify({ done: true, date: dateStr }) });
+          scheduleQuietSync(220);
+          showHud('错题已完成订正，已自动删除', 'var(--green)', {
+            label: '撤销',
+            onClick: async () => {
+              await api('/api/tasks/restore', { method: 'POST', body: JSON.stringify({ task: snapshotCopy }) });
+              await loadBootstrap(true);
+              showHud('已恢复该错题订正任务');
+            }
+          });
+        } catch (err) {
+          showHud(err.message, 'var(--red)');
+          await loadBootstrap(true);
+        }
+        return;
+      }
 
       if (!Array.isArray(task.completedDates)) task.completedDates = [];
       if (nextDone && !task.completedDates.includes(dateStr)) task.completedDates.push(dateStr);

@@ -165,10 +165,27 @@ function saveStore() {
 
 function rolloverIfNeeded() {
   const today = todayKey();
-  if (store.lastRolloverDate === today) return;
-  for (const u of store.users) u.focusMinutesToday = 0;
-  store.lastRolloverDate = today;
-  saveStore();
+  let changed = false;
+  if (store.lastRolloverDate !== today) {
+    for (const u of store.users) u.focusMinutesToday = 0;
+    store.lastRolloverDate = today;
+    changed = true;
+  }
+  for (const t of store.tasks || []) {
+    if (t.taskType === 'review' && t.mistakeKind === 'wrong_question') {
+      const curDate = /^\d{4}-\d{2}-\d{2}$/.test(String(t.date || '')) ? t.date : today;
+      const doneArr = Array.isArray(t.completedDates) ? t.completedDates : [];
+      if (curDate < today && !doneArr.includes(curDate)) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(t.originDate || ''))) t.originDate = curDate;
+        t.date = today;
+        t.reviewDates = [today];
+        const diffDays = Math.round((new Date(`${today}T00:00:00`).getTime() - new Date(`${t.originDate}T00:00:00`).getTime()) / 86400000);
+        t.rolloverCount = Math.max(1, diffDays);
+        changed = true;
+      }
+    }
+  }
+  if (changed) saveStore();
 }
 
 const sseClients = new Set();
@@ -714,9 +731,18 @@ const server = http.createServer(async (req, res) => {
       const categoryName = String(body.category || body.subject || '未分组').trim().slice(0, 18) || '未分组';
       if (categoryName !== '未分组') ensureCategoryForUser(userId, categoryName, body.categoryColor);
 
-      const taskDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : todayKey();
       const isReview = body.taskType === 'review';
-      const cleanReviewDates = isReview && Array.isArray(body.reviewDates)
+      const mistakeKind = isReview
+        ? (body.mistakeKind === 'wrong_question' ? 'wrong_question' : 'knowledge_point')
+        : '';
+      const isWrongQ = isReview && mistakeKind === 'wrong_question';
+      const tomorrowStr = (() => {
+        const d = new Date();
+        d.setDate(d.getDate() + 1);
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      })();
+      const taskDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : (isReview ? tomorrowStr : todayKey());
+      const cleanReviewDates = isReview && !isWrongQ && Array.isArray(body.reviewDates)
         ? Array.from(new Set(body.reviewDates.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d))))).sort()
         : [];
       const task = {
@@ -726,11 +752,14 @@ const server = http.createServer(async (req, res) => {
         category: categoryName,
         subject: categoryName,
         taskType: isReview ? 'review' : 'normal',
-        reviewPreset: isReview ? String(body.reviewPreset || 'ebbinghaus').slice(0, 20) : '',
-        reviewDates: isReview ? (cleanReviewDates.length ? cleanReviewDates : [taskDate]) : [],
+        mistakeKind,
+        originDate: isWrongQ ? taskDate : '',
+        rolloverCount: 0,
+        reviewPreset: isWrongQ ? 'correct_once' : (isReview ? String(body.reviewPreset || 'ebbinghaus').slice(0, 20) : ''),
+        reviewDates: isWrongQ ? [taskDate] : (isReview ? (cleanReviewDates.length ? cleanReviewDates : [taskDate]) : []),
         mistakeNote: isReview ? String(body.mistakeNote || '').trim().slice(0, 400) : '',
         mistakeReason: isReview ? String(body.mistakeReason || '').trim().slice(0, 24) : '',
-        mastery: isReview && ['weak', 'reviewing', 'mastered'].includes(body.mastery) ? body.mastery : (isReview ? 'weak' : ''),
+        mastery: isWrongQ ? '' : (isReview && ['weak', 'reviewing', 'mastered'].includes(body.mastery) ? body.mastery : (isReview ? 'weak' : '')),
         reviewCount: isReview ? Math.max(0, Number(body.reviewCount) || 0) : 0,
         lastReviewedAt: isReview ? (Number(body.lastReviewedAt) || Date.now()) : 0,
         durationMin: Math.min(360, Math.max(5, Number(body.durationMin) || 30)),
@@ -781,6 +810,9 @@ const server = http.createServer(async (req, res) => {
       if (body.taskType === 'review' || body.taskType === 'normal') {
         task.taskType = body.taskType;
         if (task.taskType === 'normal') {
+          task.mistakeKind = '';
+          task.originDate = '';
+          task.rolloverCount = 0;
           task.reviewDates = [];
           task.reviewPreset = '';
           task.mistakeNote = '';
@@ -790,18 +822,55 @@ const server = http.createServer(async (req, res) => {
           task.repeatDaily = false;
         }
       }
-      if (typeof body.reviewPreset === 'string') task.reviewPreset = body.reviewPreset.slice(0, 20);
+      if (task.taskType === 'review' && (body.mistakeKind === 'wrong_question' || body.mistakeKind === 'knowledge_point')) {
+        task.mistakeKind = body.mistakeKind;
+        if (task.mistakeKind === 'wrong_question') {
+          task.reviewPreset = 'correct_once';
+          task.reviewDates = [task.date];
+          task.mastery = '';
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(String(task.originDate || ''))) task.originDate = task.date;
+        } else {
+          task.originDate = '';
+          task.rolloverCount = 0;
+          if (!['weak', 'reviewing', 'mastered'].includes(task.mastery)) task.mastery = 'weak';
+        }
+      }
+      const isWQ = task.taskType === 'review' && task.mistakeKind === 'wrong_question';
+      if (typeof body.reviewPreset === 'string' && !isWQ) task.reviewPreset = body.reviewPreset.slice(0, 20);
       if (Array.isArray(body.reviewDates)) {
-        task.reviewDates = Array.from(new Set(body.reviewDates.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d))))).sort();
+        const cleanDates = Array.from(new Set(body.reviewDates.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d))))).sort();
+        task.reviewDates = isWQ ? [task.date] : cleanDates;
       }
       if (typeof body.mistakeNote === 'string') task.mistakeNote = body.mistakeNote.trim().slice(0, 400);
       if (typeof body.mistakeReason === 'string') task.mistakeReason = body.mistakeReason.trim().slice(0, 24);
-      if (['weak', 'reviewing', 'mastered', ''].includes(body.mastery)) task.mastery = body.mastery;
+      if (!isWQ && ['weak', 'reviewing', 'mastered', ''].includes(body.mastery)) task.mastery = body.mastery;
       if (typeof body.reviewCount === 'number' && body.reviewCount >= 0) task.reviewCount = Math.round(body.reviewCount);
       if (typeof body.lastReviewedAt === 'number' && body.lastReviewedAt > 0) task.lastReviewedAt = body.lastReviewedAt;
       if (body.bumpReview === true) {
         task.reviewCount = (Number(task.reviewCount) || 0) + 1;
         task.lastReviewedAt = Date.now();
+      }
+
+      if (body.done === true && isWQ) {
+        const removed = JSON.parse(JSON.stringify(task));
+        const idx = store.tasks.findIndex((t) => t.id === task.id);
+        if (idx !== -1) store.tasks.splice(idx, 1);
+        const user = store.users.find((u) => u.id === task.userId);
+        for (const g of store.groups.filter((gr) => gr.memberIds.includes(task.userId))) {
+          store.feeds.push({
+            id: genId('f'),
+            groupId: g.id,
+            userId: task.userId,
+            type: 'checkin',
+            text: `完成错题订正「${task.category} · ${task.title}」`,
+            createdAt: Date.now(),
+            likedBy: []
+          });
+        }
+        saveStore();
+        broadcast('sync', { reason: 'task_deleted', userId: task.userId });
+        broadcast('toast', { fromUserId: task.userId, text: `${user ? user.name : '成员'} 完成了错题订正：${task.title.slice(0, 14)}` });
+        return sendJSON(res, 200, { ok: true, autoDeleted: true, removed });
       }
 
       const targetDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : todayKey();
